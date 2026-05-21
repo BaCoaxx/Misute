@@ -1,3 +1,17 @@
+; [ADDED] Zone-settling flag
+Global $g_zoneReady = False
+
+; [ADDED] Register async zone watcher — fires every 100ms independent of loop position
+AdlibRegister("ZoneWatcher", 100)
+
+; [ADDED] Catches zone transitions even mid-block, cancels movement immediately
+Func ZoneWatcher()
+    If Map_GetInstanceInfo("IsLoading") Then
+        $g_zoneReady = False
+        Map_Move(Agent_GetAgentInfo(-2, "X"), Agent_GetAgentInfo(-2, "Y"), 0)
+    EndIf
+EndFunc
+
 Func FollowLeader($desiredDistance)
     Local $Leader = GetMemberAgentID(1)
     Local $me = Agent_GetMyID()
@@ -10,6 +24,16 @@ Func FollowLeader($desiredDistance)
     If $Leader = 0 Or $Leader = $me Then Return
 
     While True
+        ; [ADDED] If ZoneWatcher flagged a load, wait here until fully settled
+        If Not $g_zoneReady Then
+            If Map_GetInstanceInfo("IsExplorable") Then
+                Map_WaitMapLoading()
+                $g_zoneReady = True
+            EndIf
+            Other_RndSleep(250)
+            ContinueLoop
+        EndIf
+
         $leaderX = Agent_GetAgentInfo($Leader, "X")
         $leaderY = Agent_GetAgentInfo($Leader, "Y")
 
@@ -30,47 +54,13 @@ Func FollowLeader($desiredDistance)
             Map_Move($newX, $newY)
         EndIf
 
-        If Not GetIsDead($Leader) And Agent_GetAgentInfo($Leader, "IsAttacking") Then
-            UAI_Fight($leaderX, $leaderY)
+        ; [CHANGED] Self-alive guard only, leader death removed, fresh leader coords
+        If Not GetIsDead($me) And Agent_GetAgentInfo($Leader, "IsAttacking") Then
+            UAI_Fight(Agent_GetAgentInfo($Leader, "X"), Agent_GetAgentInfo($Leader, "Y"))
         EndIf
-
-        If GetIsDead($Leader) Then TryRes()
 
         If GetIsDead($me) Then WaitForRes()
 
         Other_RndSleep(250)
     WEnd
 EndFunc
-
-Func GetMemberAgentID($aPartyMember)
-    If $aPartyMember < 1 Then Return 0
-
-    Local $meLogin = Agent_GetAgentInfo(-2, "LoginNumber")
-    Local $playerCount = Party_GetMyPartyInfo("ArrayPlayerPartyMemberSize")
-    If $playerCount < 1 Then Return 0
-
-    Local $pos = 0
-
-    For $i = 1 To $playerCount
-        $pos += 1
-        If $pos <> $aPartyMember Then ContinueLoop
-
-        Local $login = Party_GetMyPartyPlayerMemberInfo($i, "LoginNumber")
-        If $login = 0 Then Return 0
-
-        If $login = $meLogin Then Return Agent_GetMyID()
-
-        Local $agents = Agent_GetAgentArray(0xDB)
-        If Not IsArray($agents) Or $agents[0] = 0 Then Return 0
-
-        For $j = 1 To $agents[0]
-            If Agent_GetAgentInfo($agents[$j], "LoginNumber") = $login Then
-                Return Agent_GetAgentInfo($agents[$j], "ID")
-            EndIf
-        Next
-
-        Return 0
-    Next
-
-    Return 0
-EndFunc   ;==>GetMemberAgentID
