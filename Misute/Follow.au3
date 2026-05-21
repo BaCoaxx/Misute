@@ -51,11 +51,11 @@ Func FollowLeader($desiredDistance)
             $newX = $myX + ($newX - $myX) * $adjustFactor
             $newY = $myY + ($newY - $myY) * $adjustFactor
 
-            Map_Move($newX, $newY)
+            If $g_zoneReady Then Map_Move($newX, $newY)
         EndIf
 
         ; [CHANGED] Self-alive guard only, leader death removed, fresh leader coords
-        If Not GetIsDead($me) And Agent_GetAgentInfo($Leader, "IsAttacking") Then
+        If $g_zoneReady And Not GetIsDead($me) And Agent_GetAgentInfo($Leader, "IsAttacking") Then
             UAI_Fight(Agent_GetAgentInfo($Leader, "X"), Agent_GetAgentInfo($Leader, "Y"))
         EndIf
 
