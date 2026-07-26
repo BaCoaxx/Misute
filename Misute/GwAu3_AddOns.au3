@@ -817,6 +817,7 @@ Func DanceParty()
     Sleep(250)
     
     $BotRunning = False
+    If IsDeclared("IsRunning") Then $IsRunning = False
 EndFunc
 
 Func MerchantAscalonPre()

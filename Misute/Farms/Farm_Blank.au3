@@ -18,7 +18,7 @@ Func Farm_Blank()
         BlankSetup()
 
         While CountSlotS() > 1
-            If Not $BotRunning Then
+            If Not $IsRunning Then
                 ResetStart()
                 Return
             EndIf
