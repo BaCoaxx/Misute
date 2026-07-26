@@ -168,6 +168,7 @@ EndFunc
 Func ResetStart($sStatus = "Bot paused.")
     SetRunningState(False)
     GUICtrlSetData($GUIStartButton, "Start")
+    RefreshZoneSelectionLists(True)
     SetWorkflowState($WORKFLOW_STATE_SCANNED)
     If $sStatus <> "" Then LogStatus($sStatus)
     Sleep(500)

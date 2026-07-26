@@ -64,6 +64,7 @@ LogInfo("GwAu3 - Build date: " & $GC_S_BUILD_DATE)
 LogInfo("GwAu3 - Version: " & $GC_S_VERSION)
 LogInfo("GwAu3 - Last Update: " & $GC_S_LAST_UPDATE & @CRLF)
 Core_AutoStart()
+RunAutoStartWorkflow()
 
 While True
     If $Bot_Core_Initialized And $IsRunning Then
@@ -170,8 +171,16 @@ Func ExecuteRunPlan()
         Local $sDisplayName = ZoneRegistry_GetValue($iZoneIndex, $ZONE_REGISTRY_DISPLAY_NAME)
         Local $sStartMapConstant = ZoneRegistry_GetValue($iZoneIndex, $ZONE_REGISTRY_START_MAP)
         Local $iStartMapId = ZoneRegistry_ResolveMapId($sStartMapConstant)
+        Local $sScanReason = ""
 
         LogStatus("Preparing zone " & ($i + 1) & "/" & UBound($g_aRunPlanZoneIndexes) & ": " & $sDisplayName)
+
+        Local $iScanState = ZoneRegistry_DetectScanState($iZoneIndex, $sScanReason)
+        ZoneRegistry_SetScanState($iZoneIndex, $iScanState)
+        If $iScanState <> $ZONE_SCAN_AVAILABLE Then
+            LogWarn($sDisplayName & " is no longer available: " & $sScanReason & ". Skipping.")
+            ContinueLoop
+        EndIf
 
         If $iStartMapId <= 0 Then
             LogWarn("Starting outpost not found for " & $sDisplayName & ". Skipping.")
@@ -194,8 +203,14 @@ Func ExecuteRunPlan()
             ContinueLoop
         EndIf
 
+        LogInfo("Travelling to starting outpost for " & $sDisplayName)
+        RndTravel($iStartMapId)
+        Sleep(3000)
         LogStatus("Starting zone: " & $sDisplayName)
         VanqArea($aCurrentZoneCoords)
+
+        $iScanState = ZoneRegistry_DetectScanState($iZoneIndex, $sScanReason)
+        ZoneRegistry_SetScanState($iZoneIndex, $iScanState)
         LogStatus("Finished zone: " & $sDisplayName)
     Next
 
@@ -203,6 +218,24 @@ Func ExecuteRunPlan()
         ResetStart("Run plan complete.")
     Else
         ResetStart("Run plan paused.")
+    EndIf
+EndFunc
+
+Func RunAutoStartWorkflow()
+    If Not $g_bAutoStart Then Return
+
+    LogStatus("Auto-start requested, connecting and scanning maps.")
+    If Not InitializeBot() Then Return
+
+    WinSetTitle($MainGui, "", player_GetCharname())
+    GUICtrlSetState($GUINameCombo, $GUI_DISABLE)
+    GUICtrlSetState($GUIToggleRendering, $GUI_ENABLE)
+    SetWorkflowState($WORKFLOW_STATE_CONNECTED)
+
+    If ScanKnownZones() Then
+        RefreshZoneSelectionLists(True)
+        SetWorkflowState($WORKFLOW_STATE_SCANNED)
+        LogStatus("Auto-start setup complete. Select zones and press Start.")
     EndIf
 EndFunc
 
