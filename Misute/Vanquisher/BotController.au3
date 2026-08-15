@@ -633,7 +633,7 @@ Func Bot_UpdateVanquishActivity()
 	Local $sMapName = Maps_GetName($g_iCurrentMapIndex)
 	If $iFoes >= 0 Then
 		Log_Info("Vanquishing " & $sMapName & " - " & $iFoes & " foes remaining (" & _
-				State_FormatDuration(State_GetZoneElapsedMs()) & " elapsed).")
+				State_FormatDuration(State_GetZoneElapsedMs()) & " into the attempt).")
 	Else
 		Log_Info("Vanquishing " & $sMapName & " - " & $sActivity)
 	EndIf

@@ -88,10 +88,10 @@ Global Const $eLVCOL_DETAIL = 4
 #Region Creation
 ;~ Description: Builds the window and starts showing log output. Call once.
 Func GUI_Create()
-	$g_hMainGui = GUICreate($VQ_BOT_TITLE & " " & $VQ_BOT_VERSION, 540, 660, -1, -1, -1, _
+	$g_hMainGui = GUICreate($VQ_BOT_TITLE & " " & $VQ_BOT_VERSION, 540, 700, -1, -1, -1, _
 			BitOR($WS_EX_TOPMOST, $WS_EX_WINDOWEDGE))
 
-	GUICtrlCreateGroup($VQ_BOT_TITLE, 8, 7, 524, 644)
+	GUICtrlCreateGroup($VQ_BOT_TITLE, 8, 7, 524, 684)
 
 	; --- character selection and the main buttons --------------------------
 	GUICtrlCreateGroup("Select Your Character", 16, 24, 250, 49)
@@ -114,7 +114,7 @@ Func GUI_Create()
 	GUICtrlSetOnEvent($g_idRefreshButton, "GUI_OnRefreshCharacters")
 
 	; --- what the bot is doing ---------------------------------------------
-	GUICtrlCreateGroup("Bot Status", 16, 80, 320, 122)
+	GUICtrlCreateGroup("Bot Status", 16, 80, 320, 140)
 	GUICtrlCreateLabel("Status:", 24, 100, 70, 17)
 	$g_idStatusValue = GUICtrlCreateLabel("Idle", 96, 100, 232, 17)
 	GUICtrlCreateLabel("Zone:", 24, 118, 70, 17)
@@ -124,11 +124,12 @@ Func GUI_Create()
 	GUICtrlCreateLabel("Attempt:", 24, 154, 70, 17)
 	$g_idAttemptValue = GUICtrlCreateLabel("-", 96, 154, 232, 17)
 	GUICtrlCreateLabel("Activity:", 24, 172, 70, 17)
-	$g_idActivityValue = GUICtrlCreateLabel("-", 96, 172, 232, 17)
+	; Two lines: the activity line carries foe counts and pathfinder progress.
+	$g_idActivityValue = GUICtrlCreateLabel("-", 96, 172, 232, 34)
 	GUICtrlCreateGroup("", -99, -99, 1, 1)
 
 	; --- timers -------------------------------------------------------------
-	GUICtrlCreateGroup("Timers", 344, 80, 172, 122)
+	GUICtrlCreateGroup("Timers", 344, 80, 172, 140)
 	GUICtrlCreateLabel("Run Time:", 352, 100, 62, 17)
 	$g_idRunTimeValue = GUICtrlCreateLabel("00:00:00", 420, 100, 88, 17)
 	GUICtrlCreateLabel("Total Time:", 352, 118, 62, 17)
@@ -137,21 +138,21 @@ Func GUI_Create()
 	$g_idZoneTimeValue = GUICtrlCreateLabel("00:00:00", 420, 136, 88, 17)
 	GUICtrlCreateLabel("Timeout in:", 352, 154, 62, 17)
 	$g_idTimeoutValue = GUICtrlCreateLabel("--:--:--", 420, 154, 88, 17)
-	$g_idModeValue = GUICtrlCreateLabel("", 352, 174, 156, 17)
+	$g_idModeValue = GUICtrlCreateLabel("", 352, 176, 156, 34)
 	GUICtrlCreateGroup("", -99, -99, 1, 1)
 
 	; --- progress through the map list --------------------------------------
-	GUICtrlCreateGroup("Progress", 16, 208, 500, 66)
-	$g_idProgressBar = GUICtrlCreateProgress(24, 228, 320, 18, $PBS_SMOOTH)
-	$g_idProgressLabel = GUICtrlCreateLabel("0 / 0 maps", 352, 230, 156, 17)
-	$g_idRemainingValue = GUICtrlCreateLabel("Remaining: 0", 24, 250, 140, 17)
-	$g_idVanquishedValue = GUICtrlCreateLabel("Vanquished: 0", 170, 250, 140, 17)
-	$g_idFailedValue = GUICtrlCreateLabel("Failed: 0", 316, 250, 140, 17)
+	GUICtrlCreateGroup("Progress", 16, 226, 500, 66)
+	$g_idProgressBar = GUICtrlCreateProgress(24, 246, 320, 18, $PBS_SMOOTH)
+	$g_idProgressLabel = GUICtrlCreateLabel("0 / 0 maps", 352, 248, 156, 17)
+	$g_idRemainingValue = GUICtrlCreateLabel("Remaining: 0", 24, 268, 140, 17)
+	$g_idVanquishedValue = GUICtrlCreateLabel("Vanquished: 0", 170, 268, 140, 17)
+	$g_idFailedValue = GUICtrlCreateLabel("Failed: 0", 316, 268, 140, 17)
 	GUICtrlCreateGroup("", -99, -99, 1, 1)
 
 	; --- the map list -------------------------------------------------------
-	GUICtrlCreateGroup("Maps", 16, 280, 500, 158)
-	$g_idMapList = GUICtrlCreateListView("Map|Region|Status|Att.|Detail", 24, 296, 484, 134, -1, _
+	GUICtrlCreateGroup("Maps", 16, 298, 500, 190)
+	$g_idMapList = GUICtrlCreateListView("Map|Region|Status|Att.|Detail", 24, 314, 484, 166, -1, _
 			BitOR($LVS_EX_FULLROWSELECT, $LVS_EX_GRIDLINES))
 	_GUICtrlListView_SetColumnWidth($g_idMapList, $eLVCOL_MAP, 140)
 	_GUICtrlListView_SetColumnWidth($g_idMapList, $eLVCOL_REGION, 70)
@@ -161,22 +162,22 @@ Func GUI_Create()
 	GUICtrlCreateGroup("", -99, -99, 1, 1)
 
 	; --- log console (same colour coded rich edit as the original) ----------
-	GUICtrlCreateGroup("Activity Log", 16, 444, 500, 148)
-	$g_hLogEdit = _GUICtrlRichEdit_Create($g_hMainGui, "", 24, 460, 484, 124, _
+	GUICtrlCreateGroup("Activity Log", 16, 494, 500, 150)
+	$g_hLogEdit = _GUICtrlRichEdit_Create($g_hMainGui, "", 24, 510, 484, 126, _
 			BitOR($ES_AUTOVSCROLL, $ES_MULTILINE, $WS_VSCROLL, $ES_READONLY), $WS_EX_STATICEDGE)
 	_GUICtrlRichEdit_SetBkColor($g_hLogEdit, 0xFFFFFF)
 	GUICtrlCreateGroup("", -99, -99, 1, 1)
 
 	; --- footer -------------------------------------------------------------
-	$g_idRenderingCheckbox = GUICtrlCreateCheckbox("Rendering?", 24, 600, 100, 17)
+	$g_idRenderingCheckbox = GUICtrlCreateCheckbox("Rendering?", 24, 654, 100, 17)
 	GUICtrlSetOnEvent($g_idRenderingCheckbox, "GUI_OnToggleRendering")
 	GUICtrlSetState($g_idRenderingCheckbox, $GUI_CHECKED)
 
 	; The banner is optional - the window works with or without the image.
 	If FileExists(@ScriptDir & "\Misute.jpg") Then
-		GUICtrlCreatePic(@ScriptDir & "\Misute.jpg", 320, 592, 196, 54)
+		GUICtrlCreatePic(@ScriptDir & "\Misute.jpg", 336, 644, 180, 50)
 	ElseIf FileExists(@ScriptDir & "\..\Misute.jpg") Then
-		GUICtrlCreatePic(@ScriptDir & "\..\Misute.jpg", 320, 592, 196, 54)
+		GUICtrlCreatePic(@ScriptDir & "\..\Misute.jpg", 336, 644, 180, 50)
 	EndIf
 
 	GUISetOnEvent($GUI_EVENT_CLOSE, "GUI_OnClose")
@@ -308,7 +309,7 @@ Func GUI_UpdateTimers()
 		GUI_SetText($g_idTimeoutValue, "--:--:--")
 	EndIf
 
-	Local $sMode = ($g_bSimulationMode) ? "SIMULATION MODE - no game attached" : ""
+	Local $sMode = ($g_bSimulationMode) ? "SIMULATION MODE" & @CRLF & "(no game attached)" : ""
 	If State_IsConnected() And Not $g_bSimulationMode Then $sMode = "Connected"
 	GUI_SetText($g_idModeValue, $sMode)
 	GUICtrlSetColor($g_idModeValue, ($g_bSimulationMode) ? 0x9900CC : 0x1C7A1C)
@@ -395,7 +396,7 @@ Func GUI_OnLogLine($sLine, $iLevel)
 
 	_GUICtrlRichEdit_SetSel($g_hLogEdit, -1, -1)
 	_GUICtrlRichEdit_SetCharColor($g_hLogEdit, Log_LevelColour($iLevel))
-	_GUICtrlRichEdit_AppendText($g_hLogEdit, @CRLF & $sLine)
+	_GUICtrlRichEdit_AppendText($g_hLogEdit, (($g_iGuiLogLines > 0) ? @CRLF : "") & $sLine)
 	_GUICtrlEdit_Scroll($g_hLogEdit, 1)
 
 	$g_iGuiLogLines += 1
