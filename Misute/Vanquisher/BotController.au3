@@ -589,19 +589,22 @@ Func Bot_ClaimCurrentZone()
 	If Maps_GetStatus($iIndex) <> $eMAPSTATUS_PENDING Then Return False
 
 	Local $iPrevious = $g_iCurrentMapIndex
+	If Not Maps_IsValidIndex($iPrevious) Then Return False
+
 	Pathfinder_Abort()
 
-	If Maps_IsValidIndex($iPrevious) Then
-		Maps_SetStatus($iPrevious, $eMAPSTATUS_PENDING)
-		Maps_SetLastResult($iPrevious, "Postponed - vanquishing " & Maps_GetName($iIndex) & " on the way")
-		Bot_MoveToBackOfQueue($iPrevious)
-	EndIf
+	Maps_SetStatus($iPrevious, $eMAPSTATUS_PENDING)
+	Maps_SetLastResult($iPrevious, "Postponed - vanquishing " & Maps_GetName($iIndex) & " on the way")
+	Bot_MoveToBackOfQueue($iPrevious)
 
 	$g_iCurrentMapIndex = $iIndex
 	$g_iRouteLoops = 0
 	Maps_SetStatus($iIndex, $eMAPSTATUS_ACTIVE)
 	Maps_IncrementAttempts($iIndex)
 	Maps_SetPartySize($iIndex, GW_GetMaxPartySize(Maps_GetMapId($iIndex)))
+
+	; The party is already formed for the outpost we came from, and that is the
+	; outpost this attempt would recover to.
 	Maps_SetOutpost($iIndex, Maps_GetOutpostId($iPrevious), Maps_GetOutpostName($iPrevious))
 
 	State_SetCurrentMap(Maps_GetName($iIndex), Maps_GetOutpostName($iIndex))

@@ -202,7 +202,8 @@ Func Pathfinder_Abort()
 	$g_sPathDescription = ""
 	$g_hSimPathTimer = 0
 
-	If Not $g_bSimulationMode Then Agent_CancelAction()
+	; Only worth telling the character to stop if we ever told it to move.
+	If Not $g_bSimulationMode And $g_bPathInitialised Then Agent_CancelAction()
 	Return True
 EndFunc   ;==>Pathfinder_Abort
 #EndRegion Jobs

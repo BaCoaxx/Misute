@@ -334,8 +334,8 @@ Func GW_FormParty($iPartySize)
 
 	If Not Map_GetInstanceInfo("IsOutpost") Then Return False
 
-	; Rebuilding a party that is already right would cost a few seconds every
-	; single zone, so the common case is a cheap comparison.
+	; Only the size is compared: kicking and re-inviting a party that is already
+	; full would cost several seconds in every outpost to change nothing.
 	If GW_GetPartyMemberCount() = UBound($aTeam) + 1 Then Return True
 
 	VqLog_Status("Forming the party: " & PartyConfig_Describe($iPartySize) & ".")
