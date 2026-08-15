@@ -27,8 +27,9 @@ Misute/Vanquisher/
 ├── App.au3             startup and the application loop
 ├── GUI.au3             window, events, refresh, log console
 ├── BotController.au3   state machine, work queue, retries, timeout, caravanning
-├── Maps.au3            the zone database and per-zone status
-├── Routes.au3          the waypoints for each zone
+├── Maps.au3            the zone database (137 zones) and per-zone status
+├── Routes.au3          route lookup, data in Routes/ by campaign
+├── Routes/             Prophecies / Factions / Nightfall / EyeOfTheNorth data
 ├── GuildWars.au3       game adapter: client, map, party, vanquish state
 ├── Pathfinder.au3      movement adapter: travel, portal hops, routes
 ├── PartyConfig.au3     hero/henchman setup, read from Vanquisher.ini
@@ -158,11 +159,12 @@ Maps_Register("Regent Valley", 101, "Ascalon", "RegentValley")
 Outpost, party size, status, attempts and last result are filled in while the
 bot runs, so a zone with no outpost needs no special handling.
 
-A route is a plain array of waypoints in `Routes.au3`:
+A route is a plain array of waypoints, one `Route_<Name>()` function per zone
+in `Routes/`, grouped by campaign:
 
 ```autoit
 Func Route_RegentValley()
-    Local $aRoute[106][2] = [ _
+    Local $aRoute[212][2] = [ _
             [21699, 3672], [20858, 3211], ... _
     ]
     Return $aRoute
@@ -174,9 +176,11 @@ the way between two waypoints and fights everything inside its aggro range on
 the way, so a loop that passes every spawn is enough. If the zone is not clear
 when the route ends, the controller runs it again (up to `$MAX_ROUTE_LOOPS`).
 
-The shipped coordinates come from
+All 137 vanquishable zones from
 [mrdomrocks' Guild Wars Vanquish Bot](https://github.com/mrdomrocks/Guild-Wars-Vanquish-Bot)
-(MIT).
+(MIT) are included - every campaign, ~30,000 waypoints. Where the reference ran
+several arrays per zone (forward, reverse, extra loops) they are concatenated
+in the order it ran them, so nothing is lost.
 
 ---
 
