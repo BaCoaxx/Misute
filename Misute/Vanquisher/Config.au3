@@ -74,9 +74,12 @@ Global Const $RETRY_AT_END_OF_QUEUE = True
 ;~ script does not burn a core while idle.
 Global Const $TICK_SLEEP_MS = 25
 
-;~ How often the GUI redraws time based fields (labels are otherwise only
-;~ redrawn when the bot state actually changes).
+;~ How often the GUI redraws time based fields when nothing else has changed.
 Global Const $GUI_REFRESH_MS = 250
+
+;~ Floor on redraws. A change in bot state is shown this quickly, and never
+;~ faster, so a chatty state does not turn into hundreds of repaints a second.
+Global Const $GUI_MIN_REPAINT_MS = 100
 
 ;~ How many maps are queried per tick while checking vanquished status. Keeping
 ;~ this low means a long map list does not freeze the GUI.
