@@ -3,30 +3,42 @@
 #include "Log.au3"
 #include "BotState.au3"
 #include "GuildWars.au3"
+#include "Routes.au3"
 
 #cs ----------------------------------------------------------------------------
 
     Pathfinder.au3
 
-    Adapter around the pathfinder. The controller only ever uses the small API
-    below, so whatever the real pathfinder looks like stays contained here.
+    The movement adapter: the bot asks for a destination, this file gets the
+    character there using the GwAu3 pathfinder plugin.
 
-    The API is deliberately "begin then step":
+    Three jobs cover everything the workflow needs:
 
-        Pathfinder_BeginTravel(...)     starts a job and returns immediately
-        Pathfinder_Step()               moves the job on a little, returns status
-        Pathfinder_Abort()              stops whatever is running
+        Pathfinder_BeginTravel(outpost)     map travel to an outpost
+        Pathfinder_BeginTransfer(zone)      walk to a zone through portals
+        Pathfinder_BeginRoute(route)        walk a zone's vanquish route
 
-    That shape is what keeps the GUI alive and the stop button responsive: the
-    controller polls Pathfinder_Step() once per tick instead of blocking.
+    A job is started and then stepped:
 
-    IF YOUR PATHFINDER IS BLOCKING (one call that only returns when it arrives)
-    you have two options:
-        a) call it inside Pathfinder_Step() and return $ePATH_COMPLETE/$ePATH_FAILED
-           from that single call, and sprinkle State_Yield() into any wait loops
-           so the GUI keeps repainting, or
-        b) keep a cursor over the route's waypoints and move one waypoint per
-           Pathfinder_Step() call, which is the better behaved option.
+        Pathfinder_BeginX(...)   starts it, returns straight away
+        Pathfinder_Step()        does one waypoint or one portal hop
+        Pathfinder_Abort()       stops whatever is running
+
+    Pathfinder_MoveTo() from the plugin blocks until it arrives, so one step is
+    deliberately one leg of the journey - short enough that a stop request is
+    honoured quickly, and the plugin's per-iteration callback repaints the
+    window while a leg is in progress.
+
+    THE PORTAL PLAN
+    ---------------
+    Transfers are the interesting part. Map_GetPathWithPortalCoords() answers
+    "which maps do I cross to get from here to there, and where is the portal
+    out of each one", using the exit coordinates that ship with the API. That
+    single call covers both cases the bot cares about:
+
+        one hop   the zone is next to the outpost - walk out and start
+        many hops the zone has no outpost of its own, so the party caravans
+                  through the zones in between, fighting its way across
 
 #ce ----------------------------------------------------------------------------
 
@@ -40,7 +52,7 @@ Global Const $ePATH_FAILED = 3      ; could not do it
 #Region Job types
 Global Const $ePATHJOB_NONE = 0
 Global Const $ePATHJOB_TRAVEL = 1   ; map travel to an outpost
-Global Const $ePATHJOB_EXIT = 2     ; walk from an outpost into the zone
+Global Const $ePATHJOB_TRANSFER = 2 ; walk to a zone through portals
 Global Const $ePATHJOB_ROUTE = 3    ; run the zone's vanquish route
 #EndRegion Job types
 
@@ -51,126 +63,293 @@ Global $g_iPathJob = $ePATHJOB_NONE
 Global $g_sPathDescription = ""
 Global $g_sPathLastError = ""
 Global $g_iPathTargetMapId = 0
-Global $g_bPathTargetIsOutpost = True
+
+;~ Ranges the plugin was initialised with; the transfer job uses a tighter
+;~ aggro range than the vanquish route (see Config.au3).
+Global $g_iPathAggroRange = $PATH_AGGRO_RANGE
+
+;~ Portal plan: [map id, map name, portal x, portal y] per crossed map.
+Global $g_aPathPlan[0][4]
+Global $g_iPathHops = 0
+
+;~ Vanquish route waypoints and how far through them we are.
+Global $g_aPathRoute[0][2]
+Global $g_iPathWaypoint = 0
+
+Global Const $ePLAN_MAP_ID = 0
+Global Const $ePLAN_MAP_NAME = 1
+Global Const $ePLAN_PORTAL_X = 2
+Global Const $ePLAN_PORTAL_Y = 3
 
 ;~ Simulation only.
 Global $g_hSimPathTimer = 0
 Global $g_iSimPathDurationMs = 0
 Global $g_bSimPathWillFail = False
+Global $g_iSimPathHopsLeft = 0
 #EndRegion State
 
 #Region Lifecycle
-;~ Description: Prepares the pathfinder once per run.
-Func Pathfinder_Init()
+;~ Description: Loads the pathfinder plugin and gives it the ranges it should
+;~              work to. Called once per run.
+Func Pathfinder_Init($iAggroRange = $PATH_AGGRO_RANGE)
 	$g_iPathStatus = $ePATH_IDLE
 	$g_iPathJob = $ePATHJOB_NONE
 	$g_sPathLastError = ""
+	$g_iPathAggroRange = $iAggroRange
 
 	If $g_bSimulationMode Then
 		$g_bPathInitialised = True
 		Return True
 	EndIf
 
-	; INTEGRATION POINT: load/attach the pathfinder here if it needs it.
+	$DLL_PATH = @ScriptDir & $PATH_DLL_RELATIVE
+
+	Local $iResult = Pathfinder_Initialize()
+	If $iResult = 0 Then
+		$g_bPathInitialised = False
+		$g_sPathLastError = "GWPathfinder.dll could not be loaded from " & $DLL_PATH & "."
+		Return False
+	ElseIf $iResult = 2 Then
+		VqLog_Warn("The pathfinder loaded but found no map data - it will download maps.rar on first use.")
+	EndIf
+
+	; Ranges: how far apart waypoints may be, when one counts as reached, and
+	; how often the path and the moving obstacles are refreshed.
+	Pathfinder_SetSimplifyRange($PATH_SIMPLIFY_RANGE)
+	Pathfinder_SetWaypointReachedDistance($PATH_WAYPOINT_REACHED)
+	Pathfinder_SetPathUpdateInterval($PATH_UPDATE_INTERVAL_MS)
+	Pathfinder_SetObstacleUpdateInterval($PATH_OBSTACLE_UPDATE_MS)
+
 	$g_bPathInitialised = True
+	VqLog_Info("Pathfinder ready (aggro " & $g_iPathAggroRange & ", simplify " & $PATH_SIMPLIFY_RANGE & ").")
 	Return True
 EndFunc   ;==>Pathfinder_Init
 
-;~ Description: False when the pathfinder cannot be used, so the controller can
-;~              fail an attempt instead of hanging.
 Func Pathfinder_IsAvailable()
-	If $g_bSimulationMode Then Return True
-
-	; INTEGRATION POINT: report whether the pathfinder is loaded and usable.
 	Return $g_bPathInitialised
 EndFunc   ;==>Pathfinder_IsAvailable
 #EndRegion Lifecycle
 
 #Region Jobs
-;~ Description: Starts travelling to an outpost. Returns True when the job was
-;~              accepted; the controller then polls Pathfinder_Step().
+;~ Description: Starts map travel to an outpost.
 Func Pathfinder_BeginTravel($iOutpostId, $sOutpostName)
-	Pathfinder_BeginJob($ePATHJOB_TRAVEL, "Travelling to " & $sOutpostName, $iOutpostId, True, $SIM_TRAVEL_MS)
+	Pathfinder_BeginJob($ePATHJOB_TRAVEL, "Travelling to " & $sOutpostName, $iOutpostId, $SIM_TRAVEL_MS)
 
-	If $g_bSimulationMode Then Return True
+	If $iOutpostId <= 0 Then
+		Pathfinder_FailJob("No outpost id is known for " & $sOutpostName & ".")
+		Return False
+	EndIf
 
-	; --- INTEGRATION POINT -------------------------------------------------
-	; Ask the pathfinder (or the API) to travel to $iOutpostId, for example
-	; RndTravel($iOutpostId) from GwAu3_AddOns.au3. Do not wait for arrival
-	; here - arrival is detected in Pathfinder_Step().
-	; -----------------------------------------------------------------------
-
-	Pathfinder_FailJob("Travel is not wired up yet (Pathfinder_BeginTravel).")
-	Return False
+	GW_BeginTravel($iOutpostId)
+	Return True
 EndFunc   ;==>Pathfinder_BeginTravel
 
-;~ Description: Starts walking out of the current outpost into the zone.
-Func Pathfinder_BeginExitOutpost($iMapId, $sMapName, $sRoute)
-	Pathfinder_BeginJob($ePATHJOB_EXIT, "Leaving " & $sMapName & " outpost", $iMapId, False, $SIM_EXIT_OUTPOST_MS)
+;~ Description: Starts walking to a zone. One portal hop when the zone is next
+;~              door, a caravan across several zones when it is not.
+Func Pathfinder_BeginTransfer($iMapId, $sMapName)
+	Pathfinder_BeginJob($ePATHJOB_TRANSFER, "Walking to " & $sMapName, $iMapId, $SIM_PORTAL_MS)
+	$g_iPathHops = 0
 
-	If $g_bSimulationMode Then Return True
+	If $g_bSimulationMode Then
+		$g_iSimPathHopsLeft = Random(1, 3, 1)
+		Return True
+	EndIf
 
-	; --- INTEGRATION POINT -------------------------------------------------
-	; Ask the pathfinder to walk to the zone entrance for $sRoute / $iMapId.
-	; -----------------------------------------------------------------------
+	If Not Pathfinder_BuildPlan() Then Return False
+	Return True
+EndFunc   ;==>Pathfinder_BeginTransfer
 
-	Pathfinder_FailJob("Leaving the outpost is not wired up yet (Pathfinder_BeginExitOutpost).")
-	Return False
-EndFunc   ;==>Pathfinder_BeginExitOutpost
-
-;~ Description: Starts running a zone's vanquish route.
+;~ Description: Starts (or restarts) a zone's vanquish route.
 Func Pathfinder_BeginRoute($sRoute, $sMapName)
-	Pathfinder_BeginJob($ePATHJOB_ROUTE, "Running the " & $sMapName & " route", 0, False, $SIM_ZONE_MS)
+	Pathfinder_BeginJob($ePATHJOB_ROUTE, "Running the " & $sMapName & " route", 0, $SIM_ZONE_MS)
+	$g_iPathWaypoint = 0
 
 	If $g_bSimulationMode Then Return True
 
-	; --- INTEGRATION POINT -------------------------------------------------
-	; Hand $sRoute to the pathfinder. Pathfinder_ResolveRoute() below turns the
-	; route name into whatever your data actually is (a waypoint array from a
-	; function of that name, or the name itself as a pathfinder route id).
-	; -----------------------------------------------------------------------
+	$g_aPathRoute = Routes_Get($sRoute)
+	If @error Or UBound($g_aPathRoute) = 0 Then
+		Pathfinder_FailJob("No route data is registered under '" & $sRoute & "'.")
+		Return False
+	EndIf
 
-	Pathfinder_FailJob("Zone routing is not wired up yet (Pathfinder_BeginRoute).")
-	Return False
+	VqLog_Info($sMapName & " route: " & UBound($g_aPathRoute) & " waypoints.")
+	Return True
 EndFunc   ;==>Pathfinder_BeginRoute
 
-;~ Description: Moves the current job on and reports where it is up to. Must
-;~              always return quickly.
+;~ Description: Moves the current job on and reports where it is up to.
 Func Pathfinder_Step()
 	If $g_iPathStatus <> $ePATH_RUNNING Then Return $g_iPathStatus
-
 	If $g_bSimulationMode Then Return PathfinderSim_Step()
 
-	; --- INTEGRATION POINT -------------------------------------------------
-	; One slice of pathfinder work, then report:
-	;   Return $ePATH_RUNNING   still going
-	;   Return $ePATH_COMPLETE  arrived / route finished
-	;   Return Pathfinder_FailJob("reason")  gave up
-	;
-	; Arrival for a travel job is best confirmed with the game adapter, eg
-	;   If GW_IsInOutpost() And GW_GetCurrentMapId() = $g_iPathTargetMapId Then
-	;       Return Pathfinder_CompleteJob()
-	;   EndIf
-	; -----------------------------------------------------------------------
+	Switch $g_iPathJob
+		Case $ePATHJOB_TRAVEL
+			Return Pathfinder_StepTravel()
+		Case $ePATHJOB_TRANSFER
+			Return Pathfinder_StepTransfer()
+		Case $ePATHJOB_ROUTE
+			Return Pathfinder_StepRoute()
+	EndSwitch
 
-	Return Pathfinder_FailJob("Pathfinder_Step() is not wired up yet.")
+	Return Pathfinder_FailJob("The pathfinder was stepped with no job running.")
 EndFunc   ;==>Pathfinder_Step
 
 ;~ Description: Stops the pathfinder. Called on failure, timeout and stop.
 Func Pathfinder_Abort()
-	If $g_iPathJob <> $ePATHJOB_NONE Then Log_Info("Pathfinder aborted: " & $g_sPathDescription)
+	If $g_iPathJob <> $ePATHJOB_NONE Then VqLog_Info("Pathfinder aborted: " & $g_sPathDescription)
 
 	$g_iPathStatus = $ePATH_IDLE
 	$g_iPathJob = $ePATHJOB_NONE
 	$g_sPathDescription = ""
 	$g_hSimPathTimer = 0
 
-	If $g_bSimulationMode Then Return True
-
-	; INTEGRATION POINT: tell the pathfinder to stop moving the character.
+	If Not $g_bSimulationMode Then Agent_CancelAction()
 	Return True
 EndFunc   ;==>Pathfinder_Abort
 #EndRegion Jobs
+
+#Region Steps
+;~ Description: Travel is a client operation - there is nothing to walk, we just
+;~              wait for the character to appear in the outpost.
+Func Pathfinder_StepTravel()
+	If GW_IsInOutpost() And GW_GetCurrentMapId() = $g_iPathTargetMapId Then Return Pathfinder_CompleteJob()
+	Return $ePATH_RUNNING
+EndFunc   ;==>Pathfinder_StepTravel
+
+;~ Description: One portal hop of the plan. The hop only counts when the map
+;~              actually changes, which is what stops the bot pacing back and
+;~              forth over a portal it never crosses.
+Func Pathfinder_StepTransfer()
+	Local $iCurrentMap = GW_GetCurrentMapId()
+
+	If $iCurrentMap = $g_iPathTargetMapId And GW_IsInExplorable() Then Return Pathfinder_CompleteJob()
+	If $g_iPathHops >= $MAX_PORTAL_HOPS Then Return Pathfinder_FailJob("Gave up after " & $g_iPathHops & " portal hops.")
+
+	; Rebuild whenever we are not where the plan expects us to be: on the first
+	; step, after each hop, and after any unplanned map change.
+	If UBound($g_aPathPlan) = 0 Or $g_aPathPlan[0][$ePLAN_MAP_ID] <> $iCurrentMap Then
+		If Not Pathfinder_BuildPlan() Then Return $ePATH_FAILED
+	EndIf
+
+	Local $fPortalX = $g_aPathPlan[0][$ePLAN_PORTAL_X]
+	Local $fPortalY = $g_aPathPlan[0][$ePLAN_PORTAL_Y]
+	Local $sNextName = $g_aPathPlan[1][$ePLAN_MAP_NAME]
+
+	If $fPortalX = 0 And $fPortalY = 0 Then
+		Return Pathfinder_FailJob("The API has no exit coordinates from " & _
+				$g_aPathPlan[0][$ePLAN_MAP_NAME] & " to " & $sNextName & ".")
+	EndIf
+
+	State_SetActivity("Crossing into " & $sNextName)
+	Pathfinder_MoveTo($fPortalX, $fPortalY, -1, $PATH_OBSTACLE_FUNC, _
+			$PATH_TRANSIT_AGGRO_RANGE, $PATH_FIGHT_RANGE_OUT, 0, "Pathfinder_OnMoveTick")
+
+	; Standing on the portal is not the same as going through it.
+	If GW_GetCurrentMapId() = $iCurrentMap Then Pathfinder_PushThroughPortal($fPortalX, $fPortalY, $iCurrentMap)
+
+	If GW_GetCurrentMapId() = $iCurrentMap Then
+		Return Pathfinder_FailJob("Could not cross from " & $g_aPathPlan[0][$ePLAN_MAP_NAME] & " into " & $sNextName & ".")
+	EndIf
+
+	$g_iPathHops += 1
+	Pathfinder_WaitForMapLoad()
+	VqLog_Status("Entered " & GW_GetMapName(GW_GetCurrentMapId()) & ".")
+	Return $ePATH_RUNNING
+EndFunc   ;==>Pathfinder_StepTransfer
+
+;~ Description: One waypoint of the vanquish route. Pathfinder_MoveTo() fights
+;~              everything inside the aggro range on the way, so the route is
+;~              only ever "where to walk next".
+Func Pathfinder_StepRoute()
+	If $g_iPathWaypoint >= UBound($g_aPathRoute) Then Return Pathfinder_CompleteJob()
+
+	Local $iMapBefore = GW_GetCurrentMapId()
+	Local $fX = $g_aPathRoute[$g_iPathWaypoint][0]
+	Local $fY = $g_aPathRoute[$g_iPathWaypoint][1]
+	$g_iPathWaypoint += 1
+
+	; Waypoints we are already standing on are common where routes overlap.
+	If Agent_GetDistanceToXY($fX, $fY) < $PATH_WAYPOINT_SKIP_RANGE Then Return $ePATH_RUNNING
+
+	Pathfinder_MoveTo($fX, $fY, -1, $PATH_OBSTACLE_FUNC, _
+			$g_iPathAggroRange, $PATH_FIGHT_RANGE_OUT, 0, "Pathfinder_OnMoveTick")
+
+	If GW_GetCurrentMapId() <> $iMapBefore Then Return Pathfinder_FailJob("The route left the zone unexpectedly.")
+	If GW_IsPartyDead() Then Return Pathfinder_FailJob("The party was defeated on the route.")
+
+	Return $ePATH_RUNNING
+EndFunc   ;==>Pathfinder_StepRoute
+
+;~ Description: Called by the plugin on every iteration of a move, which is what
+;~              keeps the window painting while a leg is being walked.
+Func Pathfinder_OnMoveTick()
+	State_Yield()
+EndFunc   ;==>Pathfinder_OnMoveTick
+#EndRegion Steps
+
+#Region Portal plan
+;~ Description: Asks the API which maps lie between here and the target, and
+;~              where the exit portal out of each of them is.
+Func Pathfinder_BuildPlan()
+	Local $iCurrentMap = GW_GetCurrentMapId()
+	Local $aPath = Map_GetPathWithPortalCoords($iCurrentMap, $g_iPathTargetMapId)
+
+	If Not IsArray($aPath) Or UBound($aPath) < 2 Then
+		Pathfinder_FailJob("No portal path from " & GW_GetMapName($iCurrentMap) & " to " & _
+				GW_GetMapName($g_iPathTargetMapId) & ".")
+		Return False
+	EndIf
+
+	Local $aPlan[UBound($aPath)][4]
+	For $i = 0 To UBound($aPath) - 1
+		$aPlan[$i][$ePLAN_MAP_ID] = $aPath[$i][0]
+		$aPlan[$i][$ePLAN_MAP_NAME] = $aPath[$i][1]
+		$aPlan[$i][$ePLAN_PORTAL_X] = $aPath[$i][2]
+		$aPlan[$i][$ePLAN_PORTAL_Y] = $aPath[$i][3]
+	Next
+	$g_aPathPlan = $aPlan
+
+	If UBound($aPlan) > 2 Then
+		VqLog_Status("Caravanning " & (UBound($aPlan) - 1) & " zones: " & Pathfinder_GetPlanText() & ".")
+	EndIf
+	Return True
+EndFunc   ;==>Pathfinder_BuildPlan
+
+;~ Description: "Old Ascalon > Regent Valley > Pockmark Flats", for the log.
+Func Pathfinder_GetPlanText()
+	Local $sText = ""
+	For $i = 0 To UBound($g_aPathPlan) - 1
+		If $i > 0 Then $sText &= " > "
+		$sText &= $g_aPathPlan[$i][$ePLAN_MAP_NAME]
+	Next
+	Return $sText
+EndFunc   ;==>Pathfinder_GetPlanText
+
+;~ Description: Walks the last few steps into a portal. The pathfinder stops
+;~              125 units short of its destination, which is sometimes just shy
+;~              of the map line.
+Func Pathfinder_PushThroughPortal($fX, $fY, $iMapBefore)
+	For $i = 1 To 3
+		Map_Move($fX, $fY, 0)
+
+		Local $hTimer = TimerInit()
+		While TimerDiff($hTimer) < 1500
+			If GW_GetCurrentMapId() <> $iMapBefore Then Return True
+			State_Yield()
+			Sleep(100)
+		WEnd
+	Next
+
+	Return GW_GetCurrentMapId() <> $iMapBefore
+EndFunc   ;==>Pathfinder_PushThroughPortal
+
+Func Pathfinder_WaitForMapLoad()
+	Local $hTimer = TimerInit()
+	While Not GW_IsMapLoaded() And TimerDiff($hTimer) < 30000
+		State_Yield()
+		Sleep(200)
+	WEnd
+EndFunc   ;==>Pathfinder_WaitForMapLoad
+#EndRegion Portal plan
 
 #Region Queries
 Func Pathfinder_GetStatus()
@@ -198,38 +377,28 @@ Func Pathfinder_GetProgressPercent()
 		Return ($iPercent > 100) ? 100 : $iPercent
 	EndIf
 
-	; INTEGRATION POINT (optional): waypoint index / total waypoints.
+	If $g_iPathJob = $ePATHJOB_ROUTE And UBound($g_aPathRoute) > 0 Then
+		Return Int(($g_iPathWaypoint / UBound($g_aPathRoute)) * 100)
+	EndIf
+
 	Return -1
 EndFunc   ;==>Pathfinder_GetProgressPercent
 
 Func Pathfinder_GetLastError()
 	Return $g_sPathLastError
 EndFunc   ;==>Pathfinder_GetLastError
-
-;~ Description: Turns a route name from Maps.au3 into route data.
-;~              If a function with that name exists it is called and its return
-;~              value used (handy for "Func Route_RegentValley()" waypoint
-;~              arrays). Otherwise the name is passed through unchanged for a
-;~              pathfinder that works from route ids.
-Func Pathfinder_ResolveRoute($sRoute)
-	If $sRoute = "" Then Return SetError(1, 0, "")
-
-	Local $vRoute = Call($sRoute)
-	If @error = 0xDEAD And @extended = 0xBEEF Then Return $sRoute
-
-	Return $vRoute
-EndFunc   ;==>Pathfinder_ResolveRoute
 #EndRegion Queries
 
 #Region Internal
 ;~ Description: Common bookkeeping when any job starts.
-Func Pathfinder_BeginJob($iJobType, $sDescription, $iTargetMapId, $bTargetIsOutpost, $iSimDurationMs)
+Func Pathfinder_BeginJob($iJobType, $sDescription, $iTargetMapId, $iSimDurationMs)
 	$g_iPathJob = $iJobType
 	$g_iPathStatus = $ePATH_RUNNING
 	$g_sPathDescription = $sDescription
 	$g_sPathLastError = ""
 	$g_iPathTargetMapId = $iTargetMapId
-	$g_bPathTargetIsOutpost = $bTargetIsOutpost
+
+	ReDim $g_aPathPlan[0][4]
 
 	$g_hSimPathTimer = TimerInit()
 	$g_iSimPathDurationMs = $iSimDurationMs
@@ -268,7 +437,17 @@ Func PathfinderSim_Step()
 	Switch $g_iPathJob
 		Case $ePATHJOB_TRAVEL
 			GW_SimSetLocation($g_iPathTargetMapId, True)
-		Case $ePATHJOB_EXIT
+
+		Case $ePATHJOB_TRANSFER
+			; Every hop is one simulated portal; the last one lands in the zone.
+			$g_iSimPathHopsLeft -= 1
+			$g_iPathHops += 1
+			If $g_iSimPathHopsLeft > 0 Then
+				GW_SimSetLocation($g_iPathTargetMapId + $g_iPathHops, False)
+				VqLog_Status("Caravanning through " & GW_GetMapName(GW_GetCurrentMapId()) & ".")
+				$g_hSimPathTimer = TimerInit()
+				Return $ePATH_RUNNING
+			EndIf
 			GW_SimSetLocation($g_iPathTargetMapId, False)
 	EndSwitch
 
