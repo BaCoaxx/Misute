@@ -6,16 +6,16 @@
 
     Log.au3
 
-    Central logging. The bot logic calls LogMessage() (or one of the level
+    Central logging. The bot logic calls VqLog_Write() (or one of the level
     helpers) and never touches a GUI control.
 
     A display registers itself once:
 
-        Log_RegisterSink("GUI_OnLogLine")
+        VqLog_RegisterSink("GUI_OnLogLine")
 
     and is then called back with the formatted line and its level. The last
     $LOG_RING_SIZE lines are also kept in memory, so a display that is created
-    (or recreated) later can replay the recent history with Log_ReplayTo().
+    (or recreated) later can replay the recent history with VqLog_ReplayTo().
 
 #ce ----------------------------------------------------------------------------
 
@@ -38,22 +38,22 @@ Global $g_bLogInSink = False                 ; guards against sink recursion
 #Region Public API
 ;~ Description: Registers the function that displays log lines.
 ;~              Signature of the callback: Func MySink($sLine, $iLevel)
-Func Log_RegisterSink($sFunctionName)
+Func VqLog_RegisterSink($sFunctionName)
 	$g_sLogSink = $sFunctionName
-EndFunc   ;==>Log_RegisterSink
+EndFunc   ;==>VqLog_RegisterSink
 
 ;~ Description: Removes the current display callback (used on shutdown).
-Func Log_ClearSink()
+Func VqLog_ClearSink()
 	$g_sLogSink = ""
-EndFunc   ;==>Log_ClearSink
+EndFunc   ;==>VqLog_ClearSink
 
 ;~ Description: Writes a line to the log file, the in-memory ring buffer and the
 ;~              registered display.
-Func LogMessage($sText, $iLevel = $eLOG_INFO)
-	Local $sLine = "[" & Log_TimeStamp() & "] [" & Log_LevelName($iLevel) & "] " & $sText
+Func VqLog_Write($sText, $iLevel = $eLOG_INFO)
+	Local $sLine = "[" & VqLog_TimeStamp() & "] [" & VqLog_LevelName($iLevel) & "] " & $sText
 
-	Log_RingAdd($sLine, $iLevel)
-	Log_WriteToFile($sLine)
+	VqLog_RingAdd($sLine, $iLevel)
+	VqLog_WriteToFile($sLine)
 
 	; A sink that logs would otherwise recurse forever.
 	If $g_sLogSink <> "" And Not $g_bLogInSink Then
@@ -63,31 +63,31 @@ Func LogMessage($sText, $iLevel = $eLOG_INFO)
 	EndIf
 
 	Return $sLine
-EndFunc   ;==>LogMessage
+EndFunc   ;==>VqLog_Write
 
-Func Log_Info($sText)
-	Return LogMessage($sText, $eLOG_INFO)
-EndFunc   ;==>Log_Info
+Func VqLog_Info($sText)
+	Return VqLog_Write($sText, $eLOG_INFO)
+EndFunc   ;==>VqLog_Info
 
-Func Log_Status($sText)
-	Return LogMessage($sText, $eLOG_STATUS)
-EndFunc   ;==>Log_Status
+Func VqLog_Status($sText)
+	Return VqLog_Write($sText, $eLOG_STATUS)
+EndFunc   ;==>VqLog_Status
 
-Func Log_Event($sText)
-	Return LogMessage($sText, $eLOG_EVENT)
-EndFunc   ;==>Log_Event
+Func VqLog_Event($sText)
+	Return VqLog_Write($sText, $eLOG_EVENT)
+EndFunc   ;==>VqLog_Event
 
-Func Log_Warn($sText)
-	Return LogMessage($sText, $eLOG_WARN)
-EndFunc   ;==>Log_Warn
+Func VqLog_Warn($sText)
+	Return VqLog_Write($sText, $eLOG_WARN)
+EndFunc   ;==>VqLog_Warn
 
-Func Log_Error($sText)
-	Return LogMessage($sText, $eLOG_ERROR)
-EndFunc   ;==>Log_Error
+Func VqLog_Error($sText)
+	Return VqLog_Write($sText, $eLOG_ERROR)
+EndFunc   ;==>VqLog_Error
 
 ;~ Description: Replays the buffered history into a display callback. Called by
 ;~              the GUI right after it registers itself.
-Func Log_ReplayTo($sFunctionName)
+Func VqLog_ReplayTo($sFunctionName)
 	If $sFunctionName = "" Then Return
 	If $g_iLogRingCount = 0 Then Return
 
@@ -98,9 +98,9 @@ Func Log_ReplayTo($sFunctionName)
 		Local $iSlot = Mod($iStart + $i, $LOG_RING_SIZE)
 		Call($sFunctionName, $g_aLogRing[$iSlot][0], $g_aLogRing[$iSlot][1])
 	Next
-EndFunc   ;==>Log_ReplayTo
+EndFunc   ;==>VqLog_ReplayTo
 
-Func Log_LevelName($iLevel)
+Func VqLog_LevelName($iLevel)
 	Switch $iLevel
 		Case $eLOG_STATUS
 			Return "STATUS"
@@ -113,10 +113,10 @@ Func Log_LevelName($iLevel)
 		Case Else
 			Return "INFO"
 	EndSwitch
-EndFunc   ;==>Log_LevelName
+EndFunc   ;==>VqLog_LevelName
 
 ;~ Description: Colour used by a rich edit display for each level.
-Func Log_LevelColour($iLevel)
+Func VqLog_LevelColour($iLevel)
 	Switch $iLevel
 		Case $eLOG_ERROR
 			Return 0x322CCA ; red   (BGR)
@@ -129,39 +129,46 @@ Func Log_LevelColour($iLevel)
 		Case Else
 			Return 0x000000 ; black
 	EndSwitch
-EndFunc   ;==>Log_LevelColour
+EndFunc   ;==>VqLog_LevelColour
 
-Func Log_TimeStamp()
+Func VqLog_TimeStamp()
 	Return @HOUR & ":" & @MIN & ":" & @SEC
-EndFunc   ;==>Log_TimeStamp
+EndFunc   ;==>VqLog_TimeStamp
+
+;~ Description: The console hook GwAu3 and its pathfinder plugin write to. The
+;~              API calls Out() rather than owning a logger, so providing it
+;~              here puts API chatter in the same file and window as ours.
+Func Out($sText)
+	Return VqLog_Write($sText, $eLOG_INFO)
+EndFunc   ;==>Out
 
 ;~ Description: Starts a fresh log file and records the header.
-Func Log_Start()
+Func VqLog_Start()
 	FileDelete($VQ_LOG_FILE)
-	LogMessage($VQ_BOT_TITLE & " " & $VQ_BOT_VERSION & " - log started " & @YEAR & "-" & @MON & "-" & @MDAY, $eLOG_INFO)
+	VqLog_Write($VQ_BOT_TITLE & " " & $VQ_BOT_VERSION & " - log started " & @YEAR & "-" & @MON & "-" & @MDAY, $eLOG_INFO)
 	If $g_bSimulationMode Then
-		LogMessage("Simulation mode is ON - no Guild Wars client is being used.", $eLOG_WARN)
+		VqLog_Write("Simulation mode is ON - no Guild Wars client is being used.", $eLOG_WARN)
 	EndIf
-EndFunc   ;==>Log_Start
+EndFunc   ;==>VqLog_Start
 #EndRegion Public API
 
 #Region Internal
-Func Log_RingAdd($sLine, $iLevel)
+Func VqLog_RingAdd($sLine, $iLevel)
 	$g_aLogRing[$g_iLogRingHead][0] = $sLine
 	$g_aLogRing[$g_iLogRingHead][1] = $iLevel
 
 	$g_iLogRingHead = Mod($g_iLogRingHead + 1, $LOG_RING_SIZE)
 	If $g_iLogRingCount < $LOG_RING_SIZE Then $g_iLogRingCount += 1
-EndFunc   ;==>Log_RingAdd
+EndFunc   ;==>VqLog_RingAdd
 
 ;~ Description: Appends to the log file, reopening every time so the file
 ;~              survives a crash of the script.
-Func Log_WriteToFile($sLine)
+Func VqLog_WriteToFile($sLine)
 	Local $hFile = FileOpen($VQ_LOG_FILE, $FO_APPEND)
 	If $hFile = -1 Then Return False
 
 	FileWriteLine($hFile, $sLine)
 	FileClose($hFile)
 	Return True
-EndFunc   ;==>Log_WriteToFile
+EndFunc   ;==>VqLog_WriteToFile
 #EndRegion Internal

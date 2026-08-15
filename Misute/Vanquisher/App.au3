@@ -1,11 +1,13 @@
-#RequireAdmin
+#include-once
 
 #cs ----------------------------------------------------------------------------
 
-    Main.au3 - entry point for the Misute vanquisher.
+    App.au3 - the application itself, shared by both entry points.
 
-    Run this file. It wires the pieces together and then does nothing but turn
-    the handle:
+        Vanquisher.au3   attaches to a Guild Wars client
+        Simulation.au3   runs the same application with no client at all
+
+    It wires the pieces together and then does nothing but turn the handle:
 
         GUI            GUI.au3            what the user sees
          |
@@ -13,36 +15,39 @@
          |
         Adapters       Pathfinder.au3 / GuildWars.au3   the game
 
-    The loop below is the whole scheduler: one slice of bot work, one repaint,
-    a short sleep. Because no step blocks, the window stays responsive and a
-    stop request is picked up within a few milliseconds.
+    The loop below is the whole scheduler: one slice of bot work, one repaint, a
+    short sleep. Because no step blocks for long, the window stays responsive
+    and a stop request is picked up within a few milliseconds.
 
     Command line:
-        Main.au3 -character "My Character" [-autostart]
+        -character "My Character" [-autostart]
 
 #ce ----------------------------------------------------------------------------
-
-Opt("GUIOnEventMode", 1)     ; button clicks are delivered to handler functions
-Opt("GUICloseOnESC", False)  ; ESC must not kill a long unattended run
 
 #include "Config.au3"
 #include "Log.au3"
 #include "BotState.au3"
+#include "PartyConfig.au3"
 #include "Maps.au3"
+#include "Routes.au3"
 #include "GuildWars.au3"
 #include "Pathfinder.au3"
 #include "BotController.au3"
 #include "GUI.au3"
 
-Main()
+;~ Description: Starts the application. $bSimulation picks the adapters' mode.
+Func App_Run($bSimulation)
+	Opt("GUIOnEventMode", 1)     ; button clicks are delivered to handler functions
+	Opt("GUICloseOnESC", False)  ; ESC must not kill a long unattended run
 
-Func Main()
-	OnAutoItExitRegister("Main_OnExit")
+	OnAutoItExitRegister("App_OnExit")
 
-	Main_ParseCommandLine()
+	Config_ApplyMode($bSimulation)
+	App_ParseCommandLine()
 
-	Log_Start()
+	VqLog_Start()
 	State_Init()
+	PartyConfig_Load()
 	Maps_Load()
 
 	GUI_Create()
@@ -50,19 +55,19 @@ Func Main()
 	; Lets a blocking adapter call keep the window alive; see State_Yield().
 	State_SetPumpHandler("GUI_Pump")
 
-	Log_Info($VQ_BOT_TITLE & " ready. Press Start to begin.")
+	VqLog_Info($VQ_BOT_TITLE & " ready. Press Start to begin.")
 
 	If $g_bAutoStart Then
-		Log_Status("Auto-start requested on the command line.")
+		VqLog_Status("Auto-start requested on the command line.")
 		StartBot($g_sTargetCharacter)
 	EndIf
 
-	Main_Loop()
-EndFunc   ;==>Main
+	App_Loop()
+EndFunc   ;==>App_Run
 
 ;~ Description: The application loop. Kept deliberately tiny - all behaviour
 ;~              lives in the controller, all presentation in the GUI.
-Func Main_Loop()
+Func App_Loop()
 	Local $hExitTimer = 0
 
 	While True
@@ -81,10 +86,10 @@ Func Main_Loop()
 	WEnd
 
 	Exit
-EndFunc   ;==>Main_Loop
+EndFunc   ;==>App_Loop
 
 ;~ Description: -character "Name" selects the client, -autostart begins at once.
-Func Main_ParseCommandLine()
+Func App_ParseCommandLine()
 	For $i = 1 To $CmdLine[0]
 		Switch $CmdLine[$i]
 			Case "-character"
@@ -97,12 +102,18 @@ Func Main_ParseCommandLine()
 	; Passing a character on its own implies "just get on with it", which is how
 	; the original script behaved.
 	If $g_sTargetCharacter <> "" And $CmdLine[0] = 2 Then $g_bAutoStart = True
-EndFunc   ;==>Main_ParseCommandLine
+EndFunc   ;==>App_ParseCommandLine
+
+;~ Description: GwAu3 calls _Exit() when it cannot find the client it was asked
+;~              for, so the host script has to provide one.
+Func _Exit()
+	Exit
+EndFunc   ;==>_Exit
 
 ;~ Description: Runs on every exit, including a crash, so the log always says
 ;~              how the session ended.
-Func Main_OnExit()
+Func App_OnExit()
 	Bot_Shutdown()
-	Log_Info("Script terminated. ExitCode=" & @exitCode)
+	VqLog_Info("Script terminated. ExitCode=" & @exitCode)
 	GUI_Shutdown()
-EndFunc   ;==>Main_OnExit
+EndFunc   ;==>App_OnExit
