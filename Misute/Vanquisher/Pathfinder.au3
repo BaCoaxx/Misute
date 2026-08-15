@@ -7,38 +7,17 @@
 
 #cs ----------------------------------------------------------------------------
 
-    Pathfinder.au3
+    Pathfinder.au3 - the movement adapter around the GwAu3 pathfinder plugin.
 
-    The movement adapter: the bot asks for a destination, this file gets the
-    character there using the GwAu3 pathfinder plugin.
+    Three jobs cover the workflow: BeginTravel (map travel to an outpost),
+    BeginTransfer (walk to a zone through portals) and BeginRoute (walk the
+    zone's vanquish route). A job is started, then Pathfinder_Step() does one
+    waypoint or one portal hop per call; the plugin's per-iteration callback
+    keeps the window painting while a leg is walked.
 
-    Three jobs cover everything the workflow needs:
-
-        Pathfinder_BeginTravel(outpost)     map travel to an outpost
-        Pathfinder_BeginTransfer(zone)      walk to a zone through portals
-        Pathfinder_BeginRoute(route)        walk a zone's vanquish route
-
-    A job is started and then stepped:
-
-        Pathfinder_BeginX(...)   starts it, returns straight away
-        Pathfinder_Step()        does one waypoint or one portal hop
-        Pathfinder_Abort()       stops whatever is running
-
-    Pathfinder_MoveTo() from the plugin blocks until it arrives, so one step is
-    deliberately one leg of the journey - short enough that a stop request is
-    honoured quickly, and the plugin's per-iteration callback repaints the
-    window while a leg is in progress.
-
-    THE PORTAL PLAN
-    ---------------
-    Transfers are the interesting part. Map_GetPathWithPortalCoords() answers
-    "which maps do I cross to get from here to there, and where is the portal
-    out of each one", using the exit coordinates that ship with the API. That
-    single call covers both cases the bot cares about:
-
-        one hop   the zone is next to the outpost - walk out and start
-        many hops the zone has no outpost of its own, so the party caravans
-                  through the zones in between, fighting its way across
+    Transfers use Map_GetPathWithPortalCoords() - the exit coordinates that
+    ship with the API - so one mechanism covers both walking next door and
+    caravanning several zones in when the target has no outpost of its own.
 
 #ce ----------------------------------------------------------------------------
 

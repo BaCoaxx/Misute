@@ -6,23 +6,11 @@
 
 #cs ----------------------------------------------------------------------------
 
-    GuildWars.au3
-
-    The game adapter: everything the bot wants to know about, or do to, the
-    Guild Wars client goes through a function in this file. The controller never
-    touches the API, so the workflow can be read, tested and changed on its own.
-
-    Every function has the same shape:
-
-        If $g_bSimulationMode Then Return <a believable answer>
-        <the GwAu3 call>
-
-    which is what lets Simulation.au3 run the whole application with no client
-    attached, and Vanquisher.au3 run it for real without a single change to the
-    controller.
-
-    The API itself is included by the entry point (Vanquisher.au3), not here, so
-    that the simulation build does not need it.
+    GuildWars.au3 - the game adapter. Everything the bot asks of the client
+    goes through here; the controller never touches the API. Every function is
+    "If $g_bSimulationMode Then Return <a believable answer>" followed by the
+    GwAu3 call, which is what lets Simulation.au3 run the whole application
+    with no client attached. The API itself is included by Vanquisher.au3.
 
 #ce ----------------------------------------------------------------------------
 
