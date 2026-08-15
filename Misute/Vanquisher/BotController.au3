@@ -14,8 +14,8 @@
     The bot itself: work queue, retries, the two hour per-attempt ceiling and
     the stop handling.
 
-    It is written as a tick machine. Main.au3 calls Bot_Tick() over and over;
-    each call does one small piece of work and returns immediately. That is what
+    It is written as a tick machine. The application loop calls Bot_Tick() over
+    and over; each call does one small piece of work and returns. That is what
     keeps the GUI alive, makes the stop button responsive and lets the zone
     timer be checked continuously - no Sleep(7200000) anywhere.
 
@@ -24,30 +24,35 @@
     public entry points:
 
         StartBot()      begin a run
-        RequestStop()    ask the run to stop at the next safe point
+        RequestStop()   ask the run to stop at the next safe point
 
-    Flow of one map:
+    Flow of one zone:
 
-        NEXT_MAP -> TRAVELLING -> LEAVING -> VANQUISHING -> CONFIRMING -> NEXT_MAP
-                                     |            |             |
-                                     +------------+-------------+--> RECOVERING
-                                          (failure / timeout)         -> NEXT_MAP
+        NEXT_MAP -> TRAVELLING -> PREPARING -> ENTERING -> VANQUISHING -> CONFIRMING
+             ^                                    |            |              |
+             |                                    +------------+--------------+
+             +---------------------- RECOVERING <------- (failure / timeout)
+
+    ENTERING is where caravanning happens: it walks portal to portal until it
+    reaches the zone, and if it passes through another zone from the list on the
+    way, that zone is vanquished first (see Bot_ClaimCurrentZone).
 
 #ce ----------------------------------------------------------------------------
 
 #Region State
 Global $g_bBotActive = False        ; True while the tick machine has work
 Global $g_aWorkQueue[0]             ; map indices still to do, in order
-Global $g_iCurrentMapIndex = -1     ; map being worked on, -1 when none
+Global $g_iCurrentMapIndex = -1     ; zone being worked on, -1 when none
 
 Global $g_hStepTimer = 0            ; ceiling for the current state
 Global $g_bStepStarted = False      ; has this state's one-off work been done?
 Global $g_hProgressLogTimer = 0     ; throttles "still vanquishing" logging
-Global $g_iCheckCursor = 0          ; map being queried during the check phase
+Global $g_iCheckCursor = 0          ; zone being queried during the check phase
 Global $g_iRouteLoops = 0           ; route restarts within this attempt
+Global $g_iLastKnownMapId = 0       ; used to notice zone changes
 
-Global $g_iRunTotal = 0             ; maps this run set out to vanquish
-Global $g_iRunVanquished = 0        ; maps vanquished during this run
+Global $g_iRunTotal = 0             ; zones this run set out to vanquish
+Global $g_iRunVanquished = 0        ; zones vanquished during this run
 #EndRegion State
 
 #Region Public API
@@ -68,9 +73,10 @@ Func StartBot($sCharacterName = "")
 	$g_iRouteLoops = 0
 	$g_iRunTotal = 0
 	$g_iRunVanquished = 0
+	$g_iLastKnownMapId = 0
 	$g_bBotActive = True
 
-	Log_Event("Start requested" & (($sCharacterName <> "") ? " for " & $sCharacterName : "") & ".")
+	VqLog_Event("Start requested" & (($sCharacterName <> "") ? " for " & $sCharacterName : "") & ".")
 	Bot_TransitionTo($eBOT_INITIALISING)
 	Return True
 EndFunc   ;==>StartBot
@@ -88,7 +94,7 @@ Func RequestStop()
 
 	State_RequestStop()
 	State_SetStatusText("Stop requested...")
-	Log_Status("Stop requested - finishing the current step first.")
+	VqLog_Status("Stop requested - finishing the current step first.")
 	Return True
 EndFunc   ;==>RequestStop
 
@@ -112,7 +118,7 @@ EndFunc   ;==>Bot_SetRendering
 
 ;~ Description: Called once when the application closes.
 Func Bot_Shutdown()
-	If $g_bBotActive Then Log_Status("Shutting down while the bot was running.")
+	If $g_bBotActive Then VqLog_Status("Shutting down while the bot was running.")
 	Pathfinder_Abort()
 	GW_Shutdown()
 	$g_bBotActive = False
@@ -120,7 +126,7 @@ EndFunc   ;==>Bot_Shutdown
 #EndRegion Public API
 
 #Region Tick machine
-;~ Description: One slice of bot work. Called from the main loop.
+;~ Description: One slice of bot work. Called from the application loop.
 Func Bot_Tick()
 	If Not $g_bBotActive Then Return
 
@@ -131,6 +137,8 @@ Func Bot_Tick()
 		Return
 	EndIf
 
+	Bot_CheckZoneChange()
+
 	Switch State_GetBotState()
 		Case $eBOT_INITIALISING
 			Bot_TickInitialising()
@@ -140,8 +148,10 @@ Func Bot_Tick()
 			Bot_TickNextMap()
 		Case $eBOT_TRAVELLING
 			Bot_TickTravelling()
-		Case $eBOT_LEAVING
-			Bot_TickLeaving()
+		Case $eBOT_PREPARING
+			Bot_TickPreparing()
+		Case $eBOT_ENTERING
+			Bot_TickEntering()
 		Case $eBOT_VANQUISHING
 			Bot_TickVanquishing()
 		Case $eBOT_CONFIRMING
@@ -164,6 +174,21 @@ Func Bot_TransitionTo($iState)
 	$g_hStepTimer = TimerInit()
 	$g_bStepStarted = False
 EndFunc   ;==>Bot_TransitionTo
+
+;~ Description: Notices that the character is in a different area than it was on
+;~              the last tick. Every explorable area the bot lands in needs its
+;~              skill bar cached and its foe counters read, whether it arrived by
+;~              walking, travelling or resigning.
+Func Bot_CheckZoneChange()
+	If Not State_IsConnected() Then Return
+
+	Local $iMapId = GW_GetCurrentMapId()
+	If $iMapId = $g_iLastKnownMapId Or $iMapId <= 0 Then Return
+	If Not GW_IsMapLoaded() Then Return
+
+	$g_iLastKnownMapId = $iMapId
+	If GW_IsInExplorable() Then GW_OnZoneEntered($iMapId)
+EndFunc   ;==>Bot_CheckZoneChange
 #EndRegion Tick machine
 
 #Region States
@@ -172,7 +197,7 @@ Func Bot_TickInitialising()
 		$g_bStepStarted = True
 		State_SetStatusText("Initialising...")
 		State_SetActivity("")
-		Log_Status("Initialising...")
+		VqLog_Status("Initialising...")
 		Return
 	EndIf
 
@@ -180,28 +205,24 @@ Func Bot_TickInitialising()
 	If $g_bSimulationMode And TimerDiff($g_hStepTimer) < $SIM_CONNECT_MS Then Return
 
 	If Not Initialise($g_sTargetCharacter) Then
-		Local $iError = @error
-		Log_Error("Initialise() failed (error " & $iError & ").")
-		If $iError = $eGW_ERR_NOT_IMPLEMENTED Then
-			Log_Error("Paste your connection code into Initialise() in GuildWars.au3, or set $g_bSimulationMode = True in Config.au3.")
-		EndIf
+		VqLog_Error("Could not attach to a Guild Wars client (error " & @error & ").")
 		Bot_Fatal("Could not connect to Guild Wars.")
 		Return
 	EndIf
 
 	State_SetConnected(True, GW_GetCharacterName())
 	Local $sCharacter = State_GetCharacterName()
-	Log_Event("Connected to Guild Wars" & (($sCharacter <> "") ? " as " & $sCharacter : "") & ".")
+	VqLog_Event("Connected to Guild Wars" & (($sCharacter <> "") ? " as " & $sCharacter : "") & ".")
 
-	If Not Pathfinder_Init() Then
-		Bot_Fatal("The pathfinder could not be initialised.")
+	If Not Pathfinder_Init($PATH_AGGRO_RANGE) Then
+		Bot_Fatal("The pathfinder could not be initialised - " & Pathfinder_GetLastError())
 		Return
 	EndIf
 
 	Bot_TransitionTo($eBOT_CHECKING)
 EndFunc   ;==>Bot_TickInitialising
 
-;~ Description: Reads the vanquished status of every map, a couple per tick so
+;~ Description: Reads the vanquished status of every zone, a couple per tick so
 ;~              a long map list does not freeze the display.
 Func Bot_TickChecking()
 	Local $iTotal = Maps_Count()
@@ -209,12 +230,12 @@ Func Bot_TickChecking()
 	If Not $g_bStepStarted Then
 		$g_bStepStarted = True
 		$g_iCheckCursor = 0
-		State_SetStatusText("Checking vanquished maps...")
-		Log_Status("Checking vanquished maps...")
+		State_SetStatusText("Checking vanquished zones...")
+		VqLog_Status("Checking vanquished zones...")
 
 		If $iTotal = 0 Then
-			Log_Error("The map database is empty - add maps to Maps_Load() in Maps.au3.")
-			Bot_Fatal("No maps are defined.")
+			VqLog_Error("The map database is empty - add zones to Maps_Load() in Maps.au3.")
+			Bot_Fatal("No zones are defined.")
 		EndIf
 		Return
 	EndIf
@@ -228,35 +249,35 @@ Func Bot_TickChecking()
 		$g_iCheckCursor += 1
 	Next
 
-	State_SetActivity("Checked " & $g_iCheckCursor & " of " & $iTotal & " maps")
+	State_SetActivity("Checked " & $g_iCheckCursor & " of " & $iTotal & " zones")
 	If $g_iCheckCursor < $iTotal Then Return
 
 	$g_aWorkQueue = GetUnvanquishedMaps()
 	$g_iRunTotal = UBound($g_aWorkQueue)
 	Bot_UpdateCounters()
 
-	Log_Info(Maps_CountByStatus($eMAPSTATUS_VANQUISHED) & " of " & $iTotal & " maps are already vanquished.")
-	Log_Status($g_iRunTotal & " maps remaining")
+	VqLog_Info(Maps_CountByStatus($eMAPSTATUS_VANQUISHED) & " of " & $iTotal & " zones are already vanquished.")
+	VqLog_Status($g_iRunTotal & " zones remaining")
 
 	If $g_iRunTotal = 0 Then
-		Bot_Finish("Nothing to do - every map in the list is already vanquished.")
+		Bot_Finish("Nothing to do - every zone in the list is already vanquished.")
 		Return
 	EndIf
 
 	Bot_TransitionTo($eBOT_NEXT_MAP)
 EndFunc   ;==>Bot_TickChecking
 
-;~ Description: Takes the next map off the queue and starts an attempt at it.
-;~              This is where the per-attempt two hour timer is started.
+;~ Description: Takes the next zone off the queue and starts an attempt at it.
+;~              This is where the per-attempt two hour timer is started, and
+;~              where the outpost to start from is worked out.
 Func Bot_TickNextMap()
 	If UBound($g_aWorkQueue) = 0 Then
-		Bot_Finish("All maps complete.")
+		Bot_Finish("All zones complete.")
 		Return
 	EndIf
 
 	If Not Pathfinder_IsAvailable() Then
-		Log_Error("The pathfinder is not available - " & Pathfinder_GetLastError())
-		Bot_Fatal("The pathfinder is not available.")
+		Bot_Fatal("The pathfinder is not available - " & Pathfinder_GetLastError())
 		Return
 	EndIf
 
@@ -264,30 +285,63 @@ Func Bot_TickNextMap()
 	$g_iRouteLoops = 0
 
 	Local $sMapName = Maps_GetName($g_iCurrentMapIndex)
+	Local $iMapId = Maps_GetMapId($g_iCurrentMapIndex)
 	Local $iAttempt = Maps_IncrementAttempts($g_iCurrentMapIndex)
 
+	; The starting outpost is whatever this character has unlocked nearest to
+	; the zone, so a zone with no outpost of its own simply produces a longer
+	; walk in rather than a special case.
+	Local $iOutpost = GW_FindStartOutpost($iMapId)
+	If @error Or $iOutpost <= 0 Then
+		Maps_SetStatus($g_iCurrentMapIndex, $eMAPSTATUS_FAILED)
+		Bot_RemoveFromQueue($g_iCurrentMapIndex)
+		Maps_SetLastResult($g_iCurrentMapIndex, "No unlocked outpost leads to this zone")
+		VqLog_Error($sMapName & " cannot be reached from any unlocked outpost - skipping it.")
+		$g_iCurrentMapIndex = -1
+		Bot_UpdateCounters()
+		Return
+	EndIf
+
+	Maps_SetOutpost($g_iCurrentMapIndex, $iOutpost, GW_GetMapName($iOutpost))
+	Maps_SetPartySize($g_iCurrentMapIndex, GW_GetMaxPartySize($iMapId))
 	Maps_SetStatus($g_iCurrentMapIndex, $eMAPSTATUS_ACTIVE)
+
 	State_SetCurrentMap($sMapName, Maps_GetOutpostName($g_iCurrentMapIndex))
 	State_SetAttempt($iAttempt, $MAX_RETRIES)
-
-	; A fresh ceiling for this attempt only.
 	State_StartZoneTimer()
 
-	Log_Event("Starting " & $sMapName & " (attempt " & $iAttempt & " of " & $MAX_RETRIES & ", " & _
+	VqLog_Event("Starting " & $sMapName & " (attempt " & $iAttempt & " of " & $MAX_RETRIES & ", " & _
 			State_FormatDuration($g_iZoneTimeoutMs) & " allowed).")
 
 	Bot_TransitionTo($eBOT_TRAVELLING)
 EndFunc   ;==>Bot_TickNextMap
 
+;~ Description: Gets to the outpost the attempt starts from - unless we are
+;~              already out in the world and can simply walk there, which is how
+;~              a caravan carries on from one zone to the next.
 Func Bot_TickTravelling()
 	If Bot_CheckZoneTimeout() Then Return
 
 	Local $sOutpost = Maps_GetOutpostName($g_iCurrentMapIndex)
+	Local $iOutpostId = Maps_GetOutpostId($g_iCurrentMapIndex)
 
 	If Not $g_bStepStarted Then
 		$g_bStepStarted = True
-		Log_Status("Travelling to " & $sOutpost)
-		If Not TravelToOutpost($g_iCurrentMapIndex) Then
+
+		If $CARAVAN_ENABLED And GW_IsInExplorable() And GW_CanWalkTo(Maps_GetMapId($g_iCurrentMapIndex)) Then
+			VqLog_Status("Already in the field - walking on to " & Maps_GetName($g_iCurrentMapIndex) & ".")
+			Bot_TransitionTo($eBOT_ENTERING)
+			Return
+		EndIf
+
+		If GW_IsInOutpost() And GW_GetCurrentMapId() = $iOutpostId Then
+			Bot_TransitionTo($eBOT_PREPARING)
+			Return
+		EndIf
+
+		State_SetStatusText("Travelling to " & $sOutpost)
+		VqLog_Status("Travelling to " & $sOutpost)
+		If Not Pathfinder_BeginTravel($iOutpostId, $sOutpost) Then
 			Bot_AttemptFailed("Could not start travelling to " & $sOutpost & " - " & Pathfinder_GetLastError())
 		EndIf
 		Return
@@ -297,10 +351,10 @@ Func Bot_TickTravelling()
 
 	Switch Pathfinder_Step()
 		Case $ePATH_COMPLETE
-			Log_Status("Arrived at " & $sOutpost & ".")
-			Bot_TransitionTo($eBOT_LEAVING)
+			VqLog_Status("Arrived at " & $sOutpost & ".")
+			Bot_TransitionTo($eBOT_PREPARING)
 		Case $ePATH_FAILED
-			Bot_AttemptFailed("Pathfinder could not travel to " & $sOutpost & " - " & Pathfinder_GetLastError())
+			Bot_AttemptFailed("Could not travel to " & $sOutpost & " - " & Pathfinder_GetLastError())
 		Case Else
 			If TimerDiff($g_hStepTimer) >= $TRAVEL_TIMEOUT_MS Then
 				Bot_AttemptFailed("Timed out travelling to " & $sOutpost & " after " & _
@@ -309,16 +363,51 @@ Func Bot_TickTravelling()
 	EndSwitch
 EndFunc   ;==>Bot_TickTravelling
 
-Func Bot_TickLeaving()
+;~ Description: Sets hard mode and fills the party from Vanquisher.ini for this
+;~              area's size. Both are outpost-only operations, which is why they
+;~              have a step of their own between travelling and walking out.
+Func Bot_TickPreparing()
+	If Bot_CheckZoneTimeout() Then Return
+
+	Local $iPartySize = Maps_GetPartySize($g_iCurrentMapIndex)
+
+	If Not $g_bStepStarted Then
+		$g_bStepStarted = True
+		State_SetStatusText("Forming the party")
+		State_SetActivity($iPartySize & " man area")
+		Return
+	EndIf
+
+	If $g_bSimulationMode And TimerDiff($g_hStepTimer) < $SIM_PREPARE_MS Then Return
+
+	If Not GW_SetHardMode() Then
+		Bot_AttemptFailed("Hard mode could not be set, so a vanquish would not count.")
+		Return
+	EndIf
+
+	If Not GW_FormParty($iPartySize) Then
+		If TimerDiff($g_hStepTimer) < $PREPARE_TIMEOUT_MS Then Return
+		Bot_AttemptFailed("The " & $iPartySize & " man party could not be formed.")
+		Return
+	EndIf
+
+	Bot_TransitionTo($eBOT_ENTERING)
+EndFunc   ;==>Bot_TickPreparing
+
+;~ Description: Walks from wherever we are to the zone, through as many portals
+;~              as that takes. Zones from the list that are crossed on the way
+;~              are claimed and vanquished first.
+Func Bot_TickEntering()
 	If Bot_CheckZoneTimeout() Then Return
 
 	Local $sMapName = Maps_GetName($g_iCurrentMapIndex)
 
 	If Not $g_bStepStarted Then
 		$g_bStepStarted = True
-		Log_Status("Leaving " & Maps_GetOutpostName($g_iCurrentMapIndex) & " towards " & $sMapName)
-		If Not ExitOutpost($g_iCurrentMapIndex) Then
-			Bot_AttemptFailed("Could not leave " & Maps_GetOutpostName($g_iCurrentMapIndex) & " - " & Pathfinder_GetLastError())
+		State_SetStatusText("Walking to " & $sMapName)
+		VqLog_Status("Heading for " & $sMapName)
+		If Not Pathfinder_BeginTransfer(Maps_GetMapId($g_iCurrentMapIndex), $sMapName) Then
+			Bot_AttemptFailed("Could not work out a way into " & $sMapName & " - " & Pathfinder_GetLastError())
 		EndIf
 		Return
 	EndIf
@@ -327,16 +416,26 @@ Func Bot_TickLeaving()
 
 	Switch Pathfinder_Step()
 		Case $ePATH_COMPLETE
-			Log_Status("Entered " & $sMapName & ".")
 			Bot_TransitionTo($eBOT_VANQUISHING)
+
 		Case $ePATH_FAILED
-			Bot_AttemptFailed("Pathfinder could not leave the outpost - " & Pathfinder_GetLastError())
+			Bot_AttemptFailed("Could not reach " & $sMapName & " - " & Pathfinder_GetLastError())
+
 		Case Else
-			If TimerDiff($g_hStepTimer) >= $EXIT_OUTPOST_TIMEOUT_MS Then
-				Bot_AttemptFailed("Timed out leaving the outpost for " & $sMapName & ".")
+			If GW_IsPartyDead() Then
+				Bot_AttemptFailed("The party was defeated on the way to " & $sMapName & ".")
+				Return
+			EndIf
+
+			; A zone we are only passing through still counts if it is on the
+			; list, and clearing it now saves walking back to it later.
+			If $CARAVAN_ENABLED Then Bot_ClaimCurrentZone()
+
+			If TimerDiff($g_hStepTimer) >= $ENTER_ZONE_TIMEOUT_MS Then
+				Bot_AttemptFailed("Timed out walking to " & $sMapName & ".")
 			EndIf
 	EndSwitch
-EndFunc   ;==>Bot_TickLeaving
+EndFunc   ;==>Bot_TickEntering
 
 Func Bot_TickVanquishing()
 	If Bot_CheckZoneTimeout() Then Return
@@ -347,7 +446,16 @@ Func Bot_TickVanquishing()
 		$g_bStepStarted = True
 		$g_hProgressLogTimer = TimerInit()
 		GW_BeginZoneAttempt(Maps_GetMapId($g_iCurrentMapIndex), $sMapName)
-		Log_Event("Vanquishing " & $sMapName)
+
+		; Walking into an instance that is already empty happens often enough
+		; while caravanning to be worth checking before starting a route.
+		If GW_IsZoneAlreadyClear() Then
+			VqLog_Info($sMapName & " was already clear on entry.")
+			Bot_TransitionTo($eBOT_CONFIRMING)
+			Return
+		EndIf
+
+		VqLog_Event("Vanquishing " & $sMapName)
 		If Not VanquishZone($g_iCurrentMapIndex) Then
 			Bot_AttemptFailed("Could not start the " & $sMapName & " route - " & Pathfinder_GetLastError())
 		EndIf
@@ -371,7 +479,7 @@ Func Bot_TickVanquishing()
 				Return
 			EndIf
 
-			Log_Warn("The route finished but " & $sMapName & " is not vanquished - running it again (" & _
+			VqLog_Warn("The route finished but " & $sMapName & " is not vanquished - running it again (" & _
 					($g_iRouteLoops + 1) & " of " & $MAX_ROUTE_LOOPS & ").")
 			If Not VanquishZone($g_iCurrentMapIndex) Then
 				Bot_AttemptFailed("Could not restart the " & $sMapName & " route - " & Pathfinder_GetLastError())
@@ -381,13 +489,11 @@ Func Bot_TickVanquishing()
 			Bot_AttemptFailed("Pathfinder failed in " & $sMapName & " - " & Pathfinder_GetLastError())
 
 		Case Else
-			If GW_IsPartyDead() Then
-				Bot_AttemptFailed("The party died in " & $sMapName & ".")
-			EndIf
+			If GW_IsPartyDead() Then Bot_AttemptFailed("The party died in " & $sMapName & ".")
 	EndSwitch
 EndFunc   ;==>Bot_TickVanquishing
 
-;~ Description: Double checks the vanquish before the map is ticked off, so a
+;~ Description: Double checks the vanquish before the zone is ticked off, so a
 ;~              one-off bad read cannot mark a zone complete by accident.
 Func Bot_TickConfirming()
 	Local $sMapName = Maps_GetName($g_iCurrentMapIndex)
@@ -399,7 +505,7 @@ Func Bot_TickConfirming()
 		Return
 	EndIf
 
-	If IsZoneVanquished($g_iCurrentMapIndex) Then
+	If IsZoneVanquished($g_iCurrentMapIndex) Or GW_IsZoneAlreadyClear() Then
 		Bot_MapSucceeded()
 		Return
 	EndIf
@@ -410,13 +516,13 @@ Func Bot_TickConfirming()
 EndFunc   ;==>Bot_TickConfirming
 
 ;~ Description: Gets back to a known safe state after a failure or timeout, so
-;~              the next map does not start from the middle of a zone.
+;~              the next zone does not start from the middle of a zone.
 Func Bot_TickRecovering()
 	If Not $g_bStepStarted Then
 		$g_bStepStarted = True
 		State_SetStatusText("Recovering...")
 		State_SetActivity("Returning to an outpost")
-		Log_Status("Returning to an outpost before the next map.")
+		VqLog_Status("Returning to an outpost before the next zone.")
 		Pathfinder_Abort()
 		GW_ReturnToOutpost()
 		Return
@@ -428,19 +534,19 @@ Func Bot_TickRecovering()
 	EndIf
 
 	If TimerDiff($g_hStepTimer) >= $RECOVER_TIMEOUT_MS Then
-		Log_Warn("Recovery timed out after " & State_FormatDuration($RECOVER_TIMEOUT_MS) & " - carrying on with the next map.")
+		VqLog_Warn("Recovery timed out after " & State_FormatDuration($RECOVER_TIMEOUT_MS) & " - carrying on with the next zone.")
 		Bot_TransitionTo($eBOT_NEXT_MAP)
 	EndIf
 EndFunc   ;==>Bot_TickRecovering
 
 ;~ Description: Honours a stop request: stops the pathfinder, hands the current
-;~              map back to the queue and returns the bot to idle. The GUI stays
+;~              zone back to the queue and returns the bot to idle. The GUI stays
 ;~              open and can start again straight away.
 Func Bot_TickStopping()
 	If Not $g_bStepStarted Then
 		$g_bStepStarted = True
 		State_SetStatusText("Stopping...")
-		Log_Status("Stopping the workflow...")
+		VqLog_Status("Stopping the workflow...")
 		Pathfinder_Abort()
 
 		If Maps_IsValidIndex($g_iCurrentMapIndex) And Maps_GetStatus($g_iCurrentMapIndex) = $eMAPSTATUS_ACTIVE Then
@@ -466,12 +572,50 @@ Func Bot_TickStopping()
 	Bot_UpdateCounters()
 	State_SetBotState($eBOT_IDLE)
 	State_SetStatusText("Stopped")
-	Log_Event("Bot stopped. " & $iOutstanding & " map(s) were still outstanding.")
+	VqLog_Event("Bot stopped. " & $iOutstanding & " zone(s) were still outstanding.")
 EndFunc   ;==>Bot_TickStopping
 #EndRegion States
 
+#Region Caravanning
+;~ Description: While walking to a zone the party crosses others. If one of them
+;~              is on the list and still needs doing, it becomes the zone we are
+;~              working on and the original target goes back in the queue - it is
+;~              on the far side of here anyway, so nothing is lost.
+Func Bot_ClaimCurrentZone()
+	If Not GW_IsInExplorable() Then Return False
+
+	Local $iIndex = Maps_FindByMapId(GW_GetCurrentMapId())
+	If $iIndex < 0 Or $iIndex = $g_iCurrentMapIndex Then Return False
+	If Maps_GetStatus($iIndex) <> $eMAPSTATUS_PENDING Then Return False
+
+	Local $iPrevious = $g_iCurrentMapIndex
+	Pathfinder_Abort()
+
+	If Maps_IsValidIndex($iPrevious) Then
+		Maps_SetStatus($iPrevious, $eMAPSTATUS_PENDING)
+		Maps_SetLastResult($iPrevious, "Postponed - vanquishing " & Maps_GetName($iIndex) & " on the way")
+		Bot_MoveToBackOfQueue($iPrevious)
+	EndIf
+
+	$g_iCurrentMapIndex = $iIndex
+	$g_iRouteLoops = 0
+	Maps_SetStatus($iIndex, $eMAPSTATUS_ACTIVE)
+	Maps_IncrementAttempts($iIndex)
+	Maps_SetPartySize($iIndex, GW_GetMaxPartySize(Maps_GetMapId($iIndex)))
+	Maps_SetOutpost($iIndex, Maps_GetOutpostId($iPrevious), Maps_GetOutpostName($iPrevious))
+
+	State_SetCurrentMap(Maps_GetName($iIndex), Maps_GetOutpostName($iIndex))
+	State_SetAttempt(Maps_GetAttempts($iIndex), $MAX_RETRIES)
+	State_StartZoneTimer()
+
+	VqLog_Event("Caravan: " & Maps_GetName($iIndex) & " is on the way and still needs doing - vanquishing it now.")
+	Bot_TransitionTo($eBOT_VANQUISHING)
+	Return True
+EndFunc   ;==>Bot_ClaimCurrentZone
+#EndRegion Caravanning
+
 #Region Outcomes
-;~ Description: A map is confirmed done: tick it off, update the counters and
+;~ Description: A zone is confirmed done: tick it off, update the counters and
 ;~              move on (or finish if that was the last one).
 Func Bot_MapSucceeded()
 	Local $iIndex = $g_iCurrentMapIndex
@@ -487,25 +631,25 @@ Func Bot_MapSucceeded()
 	State_SetActivity("")
 	$g_iCurrentMapIndex = -1
 
-	Log_Event($sMapName & " successfully vanquished")
+	VqLog_Event($sMapName & " successfully vanquished")
 	Bot_UpdateCounters()
-	Log_Status(UBound($g_aWorkQueue) & " maps remaining")
+	VqLog_Status(UBound($g_aWorkQueue) & " zones remaining")
 
 	If UBound($g_aWorkQueue) = 0 Then
-		Bot_Finish("All maps complete.")
+		Bot_Finish("All zones complete.")
 	Else
 		Bot_TransitionTo($eBOT_NEXT_MAP)
 	EndIf
 EndFunc   ;==>Bot_MapSucceeded
 
 ;~ Description: The single place an attempt can fail. Decides between another
-;~              attempt and giving up on the map, then goes off to recover.
+;~              attempt and giving up on the zone, then goes off to recover.
 ;~              Every failure path (pathfinder, timeout, unexpected state) ends
 ;~              up here, which is what stops the bot looping forever.
 Func Bot_AttemptFailed($sReason)
 	Local $iIndex = $g_iCurrentMapIndex
 
-	Log_Warn($sReason)
+	VqLog_Warn($sReason)
 	Pathfinder_Abort()
 	State_ClearZoneTimer()
 	State_SetActivity("")
@@ -522,11 +666,11 @@ Func Bot_AttemptFailed($sReason)
 	If $iAttempts >= $MAX_RETRIES Then
 		Maps_SetStatus($iIndex, $eMAPSTATUS_FAILED)
 		Bot_RemoveFromQueue($iIndex)
-		Log_Error($sMapName & " failed after " & $iAttempts & " attempt(s) - marking it as failed and moving on.")
+		VqLog_Error($sMapName & " failed after " & $iAttempts & " attempt(s) - marking it as failed and moving on.")
 	Else
 		Maps_SetStatus($iIndex, $eMAPSTATUS_PENDING)
 		If $RETRY_AT_END_OF_QUEUE Then Bot_MoveToBackOfQueue($iIndex)
-		Log_Status("Will retry " & $sMapName & " (" & ($MAX_RETRIES - $iAttempts) & " attempt(s) left).")
+		VqLog_Status("Will retry " & $sMapName & " (" & ($MAX_RETRIES - $iAttempts) & " attempt(s) left).")
 	EndIf
 
 	$g_iCurrentMapIndex = -1
@@ -549,8 +693,8 @@ Func Bot_Finish($sReason)
 	State_SetBotState($eBOT_FINISHED)
 	State_SetStatusText("Finished")
 
-	Log_Event($sReason)
-	Log_Event("Run finished: " & $g_iRunVanquished & " vanquished, " & _
+	VqLog_Event($sReason)
+	VqLog_Event("Run finished: " & $g_iRunVanquished & " vanquished, " & _
 			Maps_CountByStatus($eMAPSTATUS_FAILED) & " failed, run time " & _
 			State_FormatDuration(State_GetRunElapsedMs()) & ".")
 EndFunc   ;==>Bot_Finish
@@ -568,27 +712,11 @@ Func Bot_Fatal($sReason)
 
 	State_SetBotState($eBOT_ERROR)
 	State_SetStatusText("Error - see the log")
-	Log_Error($sReason)
+	VqLog_Error($sReason)
 EndFunc   ;==>Bot_Fatal
 #EndRegion Outcomes
 
 #Region Workflow steps
-;~ These four functions are the workflow vocabulary. They only translate "what
-;~ the bot wants" into adapter calls - no decisions are made here.
-
-;~ Description: Starts travelling to the map's starting outpost.
-Func TravelToOutpost($iMapIndex)
-	Local $sOutpost = Maps_GetOutpostName($iMapIndex)
-	State_SetStatusText("Travelling to " & $sOutpost)
-	Return Pathfinder_BeginTravel(Maps_GetOutpostId($iMapIndex), $sOutpost)
-EndFunc   ;==>TravelToOutpost
-
-;~ Description: Starts walking out of the outpost into the zone.
-Func ExitOutpost($iMapIndex)
-	State_SetStatusText("Leaving " & Maps_GetOutpostName($iMapIndex))
-	Return Pathfinder_BeginExitOutpost(Maps_GetMapId($iMapIndex), Maps_GetName($iMapIndex), Maps_GetRoute($iMapIndex))
-EndFunc   ;==>ExitOutpost
-
 ;~ Description: Starts (or restarts) the zone's vanquish route.
 Func VanquishZone($iMapIndex)
 	State_SetStatusText("Vanquishing " & Maps_GetName($iMapIndex))
@@ -596,8 +724,6 @@ Func VanquishZone($iMapIndex)
 EndFunc   ;==>VanquishZone
 
 ;~ Description: Is the zone we are standing in vanquished?
-;~              $iMapIndex is accepted so a per-map check can be introduced later
-;~              without touching any caller.
 Func IsZoneVanquished($iMapIndex = -1)
 	Local $bVanquished = GW_IsCurrentZoneVanquished()
 	If @error Then Return False
@@ -614,7 +740,7 @@ Func Bot_CheckZoneTimeout()
 	If Not State_HasZoneTimedOut() Then Return False
 
 	Local $sMapName = (Maps_IsValidIndex($g_iCurrentMapIndex)) ? Maps_GetName($g_iCurrentMapIndex) : "the current zone"
-	Log_Error("Zone timeout: " & $sMapName & " used its whole " & State_FormatDuration($g_iZoneTimeoutMs) & " allowance.")
+	VqLog_Error("Zone timeout: " & $sMapName & " used its whole " & State_FormatDuration($g_iZoneTimeoutMs) & " allowance.")
 	Bot_AttemptFailed("Timed out on " & $sMapName & " after " & State_FormatDuration(State_GetZoneElapsedMs()) & ".")
 	Return True
 EndFunc   ;==>Bot_CheckZoneTimeout
@@ -632,10 +758,10 @@ Func Bot_UpdateVanquishActivity()
 
 	Local $sMapName = Maps_GetName($g_iCurrentMapIndex)
 	If $iFoes >= 0 Then
-		Log_Info("Vanquishing " & $sMapName & " - " & $iFoes & " foes remaining (" & _
+		VqLog_Info("Vanquishing " & $sMapName & " - " & $iFoes & " foes remaining (" & _
 				State_FormatDuration(State_GetZoneElapsedMs()) & " into the attempt).")
 	Else
-		Log_Info("Vanquishing " & $sMapName & " - " & $sActivity)
+		VqLog_Info("Vanquishing " & $sMapName & " - " & $sActivity)
 	EndIf
 EndFunc   ;==>Bot_UpdateVanquishActivity
 
@@ -646,7 +772,7 @@ EndFunc   ;==>Bot_UpdateCounters
 
 #Region Work queue
 ;~ The queue is a plain array of indices into the map database, worked from the
-;~ front. A map leaves the queue when it is vanquished or finally fails.
+;~ front. A zone leaves the queue when it is vanquished or finally fails.
 
 Func Bot_ClearQueue()
 	ReDim $g_aWorkQueue[0]
@@ -660,8 +786,8 @@ Func Bot_RemoveFromQueue($iMapIndex)
 	Return True
 EndFunc   ;==>Bot_RemoveFromQueue
 
-;~ Description: Sends a map to the back of the queue so a retry does not block
-;~              every other map behind it.
+;~ Description: Sends a zone to the back of the queue so a retry does not block
+;~              every other zone behind it.
 Func Bot_MoveToBackOfQueue($iMapIndex)
 	If Not Bot_RemoveFromQueue($iMapIndex) Then Return False
 	_ArrayAdd($g_aWorkQueue, $iMapIndex)

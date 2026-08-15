@@ -20,16 +20,17 @@
 #Region Bot states
 Global Const $eBOT_IDLE = 0            ; not running, waiting for Start
 Global Const $eBOT_INITIALISING = 1    ; connecting to the client
-Global Const $eBOT_CHECKING = 2        ; reading vanquished status of each map
-Global Const $eBOT_NEXT_MAP = 3        ; picking the next map off the queue
+Global Const $eBOT_CHECKING = 2        ; reading vanquished status of each zone
+Global Const $eBOT_NEXT_MAP = 3        ; picking the next zone off the queue
 Global Const $eBOT_TRAVELLING = 4      ; travelling to the starting outpost
-Global Const $eBOT_LEAVING = 5         ; walking out of the outpost
-Global Const $eBOT_VANQUISHING = 6     ; running the zone route / killing foes
-Global Const $eBOT_CONFIRMING = 7      ; verifying the zone really is vanquished
-Global Const $eBOT_RECOVERING = 8      ; getting back to a known safe state
-Global Const $eBOT_STOPPING = 9        ; honouring a stop request
-Global Const $eBOT_FINISHED = 10       ; queue emptied, nothing left to do
-Global Const $eBOT_ERROR = 11          ; unrecoverable, needs the user
+Global Const $eBOT_PREPARING = 5       ; hard mode and the hero/henchman party
+Global Const $eBOT_ENTERING = 6        ; walking to the zone through portals
+Global Const $eBOT_VANQUISHING = 7     ; running the zone route / killing foes
+Global Const $eBOT_CONFIRMING = 8      ; verifying the zone really is vanquished
+Global Const $eBOT_RECOVERING = 9      ; getting back to a known safe state
+Global Const $eBOT_STOPPING = 10       ; honouring a stop request
+Global Const $eBOT_FINISHED = 11       ; queue emptied, nothing left to do
+Global Const $eBOT_ERROR = 12          ; unrecoverable, needs the user
 #EndRegion Bot states
 
 #Region State storage
@@ -123,13 +124,15 @@ Func State_GetBotStateName($iState = -1)
 		Case $eBOT_INITIALISING
 			Return "Initialising"
 		Case $eBOT_CHECKING
-			Return "Checking maps"
+			Return "Checking zones"
 		Case $eBOT_NEXT_MAP
-			Return "Selecting map"
+			Return "Selecting zone"
 		Case $eBOT_TRAVELLING
 			Return "Travelling"
-		Case $eBOT_LEAVING
-			Return "Leaving outpost"
+		Case $eBOT_PREPARING
+			Return "Forming party"
+		Case $eBOT_ENTERING
+			Return "Walking in"
 		Case $eBOT_VANQUISHING
 			Return "Vanquishing"
 		Case $eBOT_CONFIRMING
