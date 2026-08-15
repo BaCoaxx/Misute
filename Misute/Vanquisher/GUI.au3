@@ -150,8 +150,8 @@ Func GUI_CreateHeader()
 	GUICtrlSetFont($idTitle, 14, $FW_SEMIBOLD, 0, "Segoe UI")
 	GUICtrlSetColor($idTitle, $CLR_TITLE)
 
-	$g_idModeBadge = GUICtrlCreateLabel("", $GUI_MARGIN, 36, 240, 16)
-	GUICtrlSetFont($g_idModeBadge, 8, $FW_SEMIBOLD, 0, "Segoe UI")
+	$g_idModeBadge = GUICtrlCreateLabel("", $GUI_MARGIN, 36, 250, 18)
+	GUICtrlSetFont($g_idModeBadge, 9, $FW_SEMIBOLD, 0, "Segoe UI")
 
 	GUI_CreateCaption("Character", 268, 12, 80)
 	If $g_bLoadLoggedChars Then
