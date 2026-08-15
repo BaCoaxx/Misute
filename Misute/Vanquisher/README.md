@@ -247,6 +247,22 @@ back into - goes through `GW_OnZoneEntered()`, which rebuilds the UtilityAI
 skill bar cache (`Cache_SkillBar()`) and re-reads the foe counters as the
 baseline for that zone.
 
+## Death recovery
+
+A full party wipe does not throw the attempt away. The position the party died
+at is remembered while it is still lying there, then the game brings everyone
+back at a resurrection shrine (usually ~15 seconds - the bot polls rather than
+sleeps, with a `$RESPAWN_TIMEOUT_MS` ceiling). Once back, a route rewinds to
+the **already-visited waypoint nearest the death spot** and the pathfinder
+walks from the shrine back to it, fighting as normal, so the route carries on
+from where it was interrupted - or near enough. Only visited waypoints are
+considered because the concatenated routes double back on themselves; matching
+against the whole array could skip half the zone. A portal walk needs no
+rewind - the next hop simply starts from the shrine.
+
+`$MAX_DEATHS_PER_JOB` (3) wipes on the same route or walk fail the attempt and
+hand it to the normal retry path.
+
 ---
 
 ## Installation

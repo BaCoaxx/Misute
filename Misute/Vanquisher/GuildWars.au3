@@ -393,6 +393,21 @@ Func GW_IsPartyDead()
 	Return Party_GetPartyContextInfo("IsDefeated")
 EndFunc   ;==>GW_IsPartyDead
 
+Func GW_IsPlayerDead()
+	If $g_bSimulationMode Then Return False
+	Return Agent_GetAgentInfo(-2, "IsDead")
+EndFunc   ;==>GW_IsPlayerDead
+
+;~ Description: Where the character is standing, as [x, y].
+Func GW_GetPosition()
+	Local $aPosition[2] = [0, 0]
+	If $g_bSimulationMode Then Return $aPosition
+
+	$aPosition[0] = Agent_GetAgentInfo(-2, "X")
+	$aPosition[1] = Agent_GetAgentInfo(-2, "Y")
+	Return $aPosition
+EndFunc   ;==>GW_GetPosition
+
 Func GW_Resign()
 	If $g_bSimulationMode Then
 		VqLog_Info("Resigning (simulated).")

@@ -409,10 +409,8 @@ Func Bot_TickEntering()
 			Bot_AttemptFailed("Could not reach " & $sMapName & " - " & Pathfinder_GetLastError())
 
 		Case Else
-			If GW_IsPartyDead() Then
-				Bot_AttemptFailed("The party was defeated on the way to " & $sMapName & ".")
-				Return
-			EndIf
+			; Party wipes are recovered inside the pathfinder (it waits for the
+			; shrine and carries on), so they are not checked here.
 
 			; A zone we are only passing through still counts if it is on the
 			; list, and clearing it now saves walking back to it later.
@@ -473,10 +471,9 @@ Func Bot_TickVanquishing()
 			EndIf
 
 		Case $ePATH_FAILED
+			; This includes one wipe too many - the pathfinder recovers from a
+			; wipe on its own by resuming from the waypoint nearest the death.
 			Bot_AttemptFailed("Pathfinder failed in " & $sMapName & " - " & Pathfinder_GetLastError())
-
-		Case Else
-			If GW_IsPartyDead() Then Bot_AttemptFailed("The party died in " & $sMapName & ".")
 	EndSwitch
 EndFunc   ;==>Bot_TickVanquishing
 

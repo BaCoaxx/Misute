@@ -55,6 +55,9 @@ Global $g_iPathHops = 0
 Global $g_aPathRoute[0][2]
 Global $g_iPathWaypoint = 0
 
+;~ Full party wipes survived by the current job (see Pathfinder_OnDefeat).
+Global $g_iPathDeaths = 0
+
 Global Const $ePLAN_MAP_ID = 0
 Global Const $ePLAN_MAP_NAME = 1
 Global Const $ePLAN_PORTAL_X = 2
@@ -164,8 +167,10 @@ Func Pathfinder_Step()
 		Case $ePATHJOB_TRAVEL
 			Return Pathfinder_StepTravel()
 		Case $ePATHJOB_TRANSFER
+			If GW_IsPartyDead() Then Return Pathfinder_OnDefeat()
 			Return Pathfinder_StepTransfer()
 		Case $ePATHJOB_ROUTE
+			If GW_IsPartyDead() Then Return Pathfinder_OnDefeat()
 			Return Pathfinder_StepRoute()
 	EndSwitch
 
@@ -223,6 +228,10 @@ Func Pathfinder_StepTransfer()
 	Pathfinder_MoveTo($fPortalX, $fPortalY, -1, $PATH_OBSTACLE_FUNC, _
 			$PATH_TRANSIT_AGGRO_RANGE, $PATH_FIGHT_RANGE_OUT, 0, "Pathfinder_OnMoveTick")
 
+	; A wipe on the way is recovered, not failed: after the shrine the next
+	; step simply walks to the portal again from wherever we came back.
+	If GW_IsPartyDead() Then Return Pathfinder_OnDefeat()
+
 	; Standing on the portal is not the same as going through it.
 	If GW_GetCurrentMapId() = $iCurrentMap Then Pathfinder_PushThroughPortal($fPortalX, $fPortalY, $iCurrentMap)
 
@@ -253,11 +262,79 @@ Func Pathfinder_StepRoute()
 	Pathfinder_MoveTo($fX, $fY, -1, $PATH_OBSTACLE_FUNC, _
 			$g_iPathAggroRange, $PATH_FIGHT_RANGE_OUT, 0, "Pathfinder_OnMoveTick")
 
+	If GW_IsPartyDead() Then Return Pathfinder_OnDefeat()
 	If GW_GetCurrentMapId() <> $iMapBefore Then Return Pathfinder_FailJob("The route left the zone unexpectedly.")
-	If GW_IsPartyDead() Then Return Pathfinder_FailJob("The party was defeated on the route.")
 
 	Return $ePATH_RUNNING
 EndFunc   ;==>Pathfinder_StepRoute
+
+;~ Description: A full party wipe. The character is still lying where it died,
+;~              so that position is remembered; the game then brings the party
+;~              back at a resurrection shrine (usually ~15 seconds). Once back,
+;~              a route rewinds to the already-visited waypoint nearest the
+;~              death spot, so the pathfinder walks us from the shrine to where
+;~              we died - or near enough - and the route carries on from there.
+Func Pathfinder_OnDefeat()
+	$g_iPathDeaths += 1
+	If $g_iPathDeaths > $MAX_DEATHS_PER_JOB Then
+		Return Pathfinder_FailJob("The party was wiped " & $g_iPathDeaths & " times.")
+	EndIf
+
+	Local $aDeath = GW_GetPosition()
+	VqLog_Warn("The party was wiped at " & Round($aDeath[0]) & ", " & Round($aDeath[1]) & _
+			" (wipe " & $g_iPathDeaths & " of " & $MAX_DEATHS_PER_JOB & ") - waiting for the shrine.")
+	State_SetActivity("Waiting for the resurrection shrine")
+
+	Local $iMapBefore = GW_GetCurrentMapId()
+	Local $hTimer = TimerInit()
+	While GW_IsPartyDead() Or GW_IsPlayerDead()
+		If TimerDiff($hTimer) > $RESPAWN_TIMEOUT_MS Then
+			Return Pathfinder_FailJob("The party did not respawn within " & ($RESPAWN_TIMEOUT_MS / 1000) & " seconds of the wipe.")
+		EndIf
+		If GW_GetCurrentMapId() <> $iMapBefore Then
+			Return Pathfinder_FailJob("The wipe put the party out of the zone.")
+		EndIf
+		State_Yield()
+		Sleep(250)
+	WEnd
+
+	Local $aShrine = GW_GetPosition()
+
+	If $g_iPathJob = $ePATHJOB_ROUTE Then
+		$g_iPathWaypoint = Pathfinder_NearestVisitedWaypoint($aDeath[0], $aDeath[1])
+		VqLog_Status("Respawned at " & Round($aShrine[0]) & ", " & Round($aShrine[1]) & _
+				" - walking back to waypoint " & ($g_iPathWaypoint + 1) & " of " & UBound($g_aPathRoute) & _
+				", nearest to where we died.")
+	Else
+		VqLog_Status("Respawned at " & Round($aShrine[0]) & ", " & Round($aShrine[1]) & " - carrying on to the portal.")
+	EndIf
+
+	Return $ePATH_RUNNING
+EndFunc   ;==>Pathfinder_OnDefeat
+
+;~ Description: The index of the waypoint closest to a position, out of the
+;~              waypoints the route has already visited. Only visited ones are
+;~              considered because the concatenated routes double back on
+;~              themselves - matching against the whole array could skip half
+;~              the zone.
+Func Pathfinder_NearestVisitedWaypoint($fX, $fY)
+	Local $iLast = $g_iPathWaypoint - 1
+	If $iLast > UBound($g_aPathRoute) - 1 Then $iLast = UBound($g_aPathRoute) - 1
+	If $iLast < 0 Then Return 0
+
+	Local $iNearest = 0
+	Local $fNearest = -1
+
+	For $i = 0 To $iLast
+		Local $fDistance = ($g_aPathRoute[$i][0] - $fX) ^ 2 + ($g_aPathRoute[$i][1] - $fY) ^ 2
+		If $fNearest < 0 Or $fDistance < $fNearest Then
+			$fNearest = $fDistance
+			$iNearest = $i
+		EndIf
+	Next
+
+	Return $iNearest
+EndFunc   ;==>Pathfinder_NearestVisitedWaypoint
 
 ;~ Description: Called by the plugin on every iteration of a move, which is what
 ;~              keeps the window painting while a leg is being walked.
@@ -377,6 +454,7 @@ Func Pathfinder_BeginJob($iJobType, $sDescription, $iTargetMapId, $iSimDurationM
 	$g_sPathDescription = $sDescription
 	$g_sPathLastError = ""
 	$g_iPathTargetMapId = $iTargetMapId
+	$g_iPathDeaths = 0
 
 	ReDim $g_aPathPlan[0][4]
 
