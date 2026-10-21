@@ -17,6 +17,10 @@ $MainGui = GUICreate($BotTitle, 316, 362, 244, 170, -1, BitOR($WS_EX_TOPMOST,$WS
 $Group3 = GUICtrlCreateGroup("Misute", 8, 7, 300, 347, -1,  $WS_EX_TRANSPARENT)
 $Group1 = GUICtrlCreateGroup("Select Your Character", 16, 24, 160, 49)
 
+$TotBagOpenerLabel = GUICtrlCreateLabel("Tot Bag Opener", 16, 90, 150, 25)
+GUICtrlSetColor($TotBagOpenerLabel, 0xFF8C00)
+GUICtrlSetFont($TotBagOpenerLabel, 14, $FW_BOLD)
+
 Global $GUINameCombo
 If $doLoadLoggedChars Then
     $GUINameCombo = GUICtrlCreateCombo($g_s_MainCharName, 24, 40, 144, 25, BitOR($CBS_DROPDOWN,$CBS_AUTOHSCROLL))
@@ -24,15 +28,6 @@ If $doLoadLoggedChars Then
 Else
     $GUINameCombo = GUICtrlCreateInput($g_s_MainCharName, 24, 40, 144, 25)
 EndIf
-GUICtrlCreateGroup("", -99, -99, 1, 1)
-
-Global $FarmCombo
-$Group2 = GUICtrlCreateGroup("Select Farm", 16, 76, 160, 49)
-$FarmCombo = GUICtrlCreateCombo("", 24, 92, 144, 25, BitOR($CBS_DROPDOWN,$CBS_AUTOHSCROLL))
-
-For $i = 0 To UBound($g_a_Farms) - 1
-    GUICtrlSetData($FarmCombo, $g_a_Farms[$i][0])
-Next
 GUICtrlCreateGroup("", -99, -99, 1, 1)
 
 ; Buttons/Checkboxes
@@ -73,14 +68,12 @@ Func GuiButtonHandler()
 
                 GUICtrlSetState($GUIToggleRendering, $GUI_ENABLE)
                 GUICtrlSetState($GUIStartButton, $GUI_DISABLE)
-                GUICtrlSetState($FarmCombo, $GUI_DISABLE)
 
                 GUICtrlSetData($GUIStartButton, "Stop")
                 GUICtrlSetState($GUIStartButton, $GUI_ENABLE)
                 $BotRunning = True
 
             ElseIf $BotRunning Then
-                GUICtrlSetState($FarmCombo, $GUI_ENABLE)
                 
                 GUICTrlSetState($GUIStartButton, $GUI_DISABLE)
                 GUICtrlSetData($GUIStartButton, "Pausing...")
@@ -138,7 +131,6 @@ EndFunc
 
 Func ResetStart()
     GUICtrlSetState($GUIStartButton, $GUI_ENABLE)
-    GUICtrlSetState($FarmCombo, $GUI_ENABLE)
     GUICtrlSetData($GUIStartButton, "Start")
     LogStatus("Bot paused.")
     Sleep(500)

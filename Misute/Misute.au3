@@ -78,6 +78,20 @@ WEnd
 
 Func Main()
     Sleep(1000)
+    LogError("HAPPY HALLOWEEN!!!")
+    Sleep(250)
+    LogInfo("Looking for trick or treat bags..")
+
+    ;If CountSlots() <= 0 Then
+        ;LogWarn("No free slots, clearing inventory first..")
+
+	For $i = 1 To 4
+		For $j = 1 To Item_GetBagInfo(Item_GetBagPtr($i), 'Slots')
+			$lItemPtr = Item_GetItemBySlot($i, $j)
+			If $lItemPtr == 28434 Then Item_UseItem($lItemPtr)
+            Sleep(100)
+		Next
+	Next
 EndFunc
 
 ; =======================
