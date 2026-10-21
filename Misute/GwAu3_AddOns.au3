@@ -3019,3 +3019,65 @@ Func FormatElapsedTime($timerHandle)
     Return StringFormat("%02d:%02d:%02d", $hours, $minutes, $seconds)
 EndFunc
 #EndRegion
+
+#Region Storage/Xunlai
+Func GetXunlaiStorageBags()
+    Local $aBags[14]
+    For $i = 0 To 13
+        $aBags[$i] = $i + 8
+    Next
+    Return $aBags
+EndFunc
+
+Func MoveInventoryToXunlai()
+    Local $aStorageBags = GetXunlaiStorageBags()
+    Local $iBag, $iSlot, $iStorageBag, $iStorageSlot
+    Local $i, $iBagSlots, $iStorageSlots
+    Local $lItemPtr, $lDestItemPtr
+    Local $bFound
+
+    For $iBag = 1 To 4
+        $iBagSlots = Item_GetBagInfo($iBag, "Slots")
+
+        For $iSlot = 1 To $iBagSlots
+            $lItemPtr = Item_GetItemBySlot($iBag, $iSlot)
+
+            ; Skip empty inventory slots
+            If Not $lItemPtr Then ContinueLoop
+
+            $bFound = False
+
+            ; Find the next empty Xunlai Storage slot
+            For $i = 0 To UBound($aStorageBags) - 1
+                $iStorageBag = $aStorageBags[$i]
+                $iStorageSlots = Item_GetBagInfo($iStorageBag, "Slots")
+
+                For $iStorageSlot = 1 To $iStorageSlots
+                    $lDestItemPtr = Item_GetItemBySlot( _
+                        $iStorageBag, $iStorageSlot)
+
+                    If Not $lDestItemPtr Then
+                        $bFound = True
+                        ExitLoop
+                    EndIf
+                Next
+
+                If $bFound Then ExitLoop
+            Next
+
+            ; Stop if storage is full
+            If Not $bFound Then
+                LogInfo("Xunlai storage is full, sort your life out and reorganise your storage space BITCH!!")
+                Sleep(2000)
+                Exit
+            EndIf
+
+            ; Move the item stack to the empty storage slot
+            Item_MoveItem($lItemPtr, $iStorageBag, $iStorageSlot)
+            Sleep(500)
+        Next
+    Next
+
+    LogInfo("Inventory transfer finished..")
+    Return
+EndFunc
