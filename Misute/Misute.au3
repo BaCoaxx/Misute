@@ -102,6 +102,7 @@ Func Main()
 			Sleep(250)
 			Exit
 		EndIf
+	EndIf
 
 	For $i = 1 To 4
 		For $j = 1 To Item_GetBagInfo(Item_GetBagPtr($i), 'Slots')
