@@ -82,8 +82,26 @@ Func Main()
     Sleep(250)
     LogInfo("Looking for trick or treat bags..")
 
-    ;If CountSlots() <= 0 Then
-        ;LogWarn("No free slots, clearing inventory first..")
+    If CountSlots() <= 0 Then
+        LogWarn("No free slots, clearing inventory first..")
+		If MoveInventoryToXunlai() Then
+			LogInfo("Go get those bags tiger!!")
+		Else
+			LogError("Bot will now exit in 5 seconds..")
+			LogInfo("5")
+			Sleep(1000)
+			LogInfo("4")
+			Sleep(1000)
+			LogInfo("3")
+			Sleep(1000)
+			LogInfo("2")
+			Sleep(1000)
+			LogInfo("1")
+			Sleep(1000)
+			LogError("KABOOOM!!!")
+			Sleep(250)
+			Exit
+		EndIf
 
 	For $i = 1 To 4
 		For $j = 1 To Item_GetBagInfo(Item_GetBagPtr($i), 'Slots')
