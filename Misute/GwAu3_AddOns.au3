@@ -3069,7 +3069,7 @@ Func MoveInventoryToXunlai()
             If Not $bFound Then
                 LogInfo("Xunlai storage is full, sort your life out and reorganise your storage space BITCH!!")
                 Sleep(2000)
-                Exit
+                Return False
             EndIf
 
             ; Move the item stack to the empty storage slot
@@ -3079,5 +3079,5 @@ Func MoveInventoryToXunlai()
     Next
 
     LogInfo("Inventory transfer finished..")
-    Return
+    Return True
 EndFunc
